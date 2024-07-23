@@ -1,0 +1,44 @@
+<!-- Start of swipe.html -->
+{% extends "entreprinder/base.html" %}
+<!-- After extends -->
+{% load static %}
+
+{% block title %}Swipe - Entreprinder{% endblock %}
+
+{% block extra_css %}
+<!-- Debug: CSS block start -->
+<link rel="stylesheet" href="{% static 'css/swipe.css' %}">
+<!-- Debug: CSS block end -->
+{% endblock %}
+
+{% block content %}
+<!-- Debug: Content block start -->
+<h1>Swipe Page</h1>
+<div id="swipe-container">
+    {% for profile in profiles %}
+    <div class="profile-card" data-profile-id="{{ profile.id }}">
+        {% if profile.profile_picture %}
+            <img src="{{ profile.profile_picture.url }}" alt="{{ profile.user.username }}'s profile picture">
+        {% else %}
+            <img src="{% static 'images/default-profile.png' %}" alt="Default profile picture">
+        {% endif %}
+        <div class="profile-info">
+            <h2>{{ profile.user.get_full_name }}</h2>
+            <p><strong>Company:</strong> {{ profile.company }}</p>
+            <p><strong>Industry:</strong> {{ profile.industry }}</p>
+            <p>{{ profile.bio|truncatewords:20 }}</p>
+        </div>
+    </div>
+    {% empty %}
+    <p>No more profiles to show!</p>
+    {% endfor %}
+</div>
+<div class="swipe-buttons">
+    <button id="dislike" class="btn btn-danger"><i class="fas fa-times"></i></button>
+    <button id="like" class="btn btn-success"><i class="fas fa-heart"></i></button>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/swipe.js' %}"></script>
+{% endblock %}
