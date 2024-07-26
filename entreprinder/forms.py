@@ -16,11 +16,3 @@ class EntrepreneurProfileForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['profile_picture'].widget.attrs.update({'class': 'form-control-file'})
-
-    def clean_profile_picture(self):
-        profile_picture = self.cleaned_data.get('profile_picture')
-        if profile_picture:
-            # Add any validation for the profile picture here
-            # For example, check file size, type, etc.
-            pass
-        return profile_picture

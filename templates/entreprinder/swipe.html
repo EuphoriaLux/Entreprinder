@@ -9,40 +9,22 @@
 
 {% block content %}
 <div class="container mt-5">
-    <div class="swipe-container" id="swipe-container">
-        {% if profile %}
-            <div class="profile-card" data-profile-id="{{ profile.id }}">
-                {% if profile.profile_picture %}
-                    <img src="{{ profile.profile_picture.url }}" alt="{{ profile.user.username }}'s profile picture" class="profile-picture">
-                {% else %}
-                    <img src="{% static 'images/default-profile.png' %}" alt="Default profile picture" class="profile-picture">
-                {% endif %}
-                <div class="profile-info">
-                    <h2>{{ profile.user.get_full_name }}</h2>
-                    <p><strong>{{ profile.industry }}</strong></p>
-                    <p>{{ profile.company }}</p>
-                    <p>{{ profile.bio|truncatewords:20 }}</p>
-                </div>
-            </div>
-        {% else %}
-            <div class="profile-card">
-                <div class="profile-info text-center">
-                    <h2>No more profiles</h2>
-                    <p>Check back later for new matches!</p>
-                </div>
-            </div>
-        {% endif %}
+    <div id="swipe-container" class="swipe-container">
+        <!-- Profile card will be inserted here by JavaScript -->
     </div>
-    {% if profile %}
-        <div class="swipe-buttons">
-            <button id="dislike" class="swipe-button"><i class="fas fa-times"></i></button>
-            <button id="like" class="swipe-button"><i class="fas fa-heart"></i></button>
-        </div>
-    {% endif %}
+    <div class="swipe-buttons">
+        <button id="dislike" class="swipe-button">👎</button>
+        <button id="like" class="swipe-button">👍</button>
+    </div>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
 <script src="{% static 'js/swipe.js' %}"></script>
+<script>
+    // Pass the initial profile data to JavaScript
+    var initialProfile = {{ profile|safe|default:"null" }};
+    var currentUserPicture = "{{ current_user_picture }}";
+</script>
 {% endblock %}

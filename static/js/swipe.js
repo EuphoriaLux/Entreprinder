@@ -4,33 +4,42 @@ document.addEventListener('DOMContentLoaded', function() {
     const dislikeButton = document.getElementById('dislike');
     const buttonsContainer = document.querySelector('.swipe-buttons');
 
-    let currentCard = swipeContainer.querySelector('.profile-card');
-    let hammer = new Hammer(swipeContainer);
+    let currentCard = null;
+    let hammer = null;
     let isSwipeInProgress = false;
 
-    setupSwipe();
+    // Load the initial profile
+    if (initialProfile) {
+        updateProfileCard(initialProfile);
+    } else {
+        showNoMoreProfiles();
+    }
 
     function setupSwipe() {
-        hammer.on('pan', handlePan);
-        hammer.on('panend', handlePanEnd);
+        if (currentCard) {
+            // Destroy previous Hammer instance if it exists
+            if (hammer) {
+                hammer.destroy();
+            }
+            // Initialize new Hammer instance
+            hammer = new Hammer(currentCard);
+            hammer.on('pan', handlePan);
+            hammer.on('panend', handlePanEnd);
+        }
     }
 
     function handlePan(event) {
-        if (isSwipeInProgress) return;
-        const card = swipeContainer.querySelector('.profile-card');
-        if (!card) return;
+        if (isSwipeInProgress || !currentCard) return;
         
         const xPos = event.deltaX;
         const rotate = xPos / 10;
 
-        card.style.transform = `translateX(${xPos}px) rotate(${rotate}deg)`;
-        card.style.transition = 'none';
+        currentCard.style.transform = `translateX(${xPos}px) rotate(${rotate}deg)`;
+        currentCard.style.transition = 'none';
     }
 
     function handlePanEnd(event) {
-        if (isSwipeInProgress) return;
-        const card = swipeContainer.querySelector('.profile-card');
-        if (!card) return;
+        if (isSwipeInProgress || !currentCard) return;
 
         const threshold = 150;
         let action = 'reset';
@@ -42,13 +51,13 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         if (action === 'reset') {
-            card.style.transform = '';
+            currentCard.style.transform = '';
         } else {
             const endX = action === 'like' ? window.innerWidth : -window.innerWidth;
-            card.style.transform = `translateX(${endX}px) rotate(${event.deltaX / 10}deg)`;
+            currentCard.style.transform = `translateX(${endX}px) rotate(${event.deltaX / 10}deg)`;
         }
 
-        card.style.transition = 'transform 0.5s';
+        currentCard.style.transition = 'transform 0.5s';
 
         if (action !== 'reset') {
             isSwipeInProgress = true;
@@ -60,11 +69,10 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function swipeAction(action) {
-        const card = swipeContainer.querySelector('.profile-card');
-        if (!card) return;
-
-        const profileId = card.dataset.profileId;
-
+        if (!currentCard) return;
+    
+        const profileId = currentCard.dataset.profileId;
+    
         fetch('/swipe-action/', {
             method: 'POST',
             headers: {
@@ -79,20 +87,75 @@ document.addEventListener('DOMContentLoaded', function() {
         .then(response => response.json())
         .then(data => {
             if (data.status === 'match') {
-                showMatchView(data.match_profile, data.next_profile);
-            } else if (data.next_profile) {
-                updateProfileCard(data.next_profile);
+                if (data.match_profile) {
+                    const currentUserPicture = currentCard.querySelector('.profile-picture').src;
+                    showMatchView(data.match_profile, data.next_profile, currentUserPicture);
+                } else {
+                    console.error('Match found but no match_profile data received');
+                    showErrorModal('An error occurred while processing the match. Please try again.');
+                }
+            } else if (data.status === 'success') {
+                if (data.next_profile) {
+                    updateProfileCard(data.next_profile);
+                } else {
+                    redirectToNoMoreProfiles();
+                }
+            } else if (data.status === 'no_more_profiles') {
+                redirectToNoMoreProfiles();
             } else {
-                showNoMoreProfiles();
+                console.error('Unexpected response status:', data.status);
+                showErrorModal('An unexpected error occurred. Please try again.');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('An error occurred. Please try again.');
+            showErrorModal('An error occurred. Please try again.');
+        });
+    }
+
+    function showMatchView(matchProfile, nextProfile) {
+        if (!matchProfile) {
+            console.error('No match profile data provided to showMatchView');
+            return;
+        }
+    
+        console.log('Match profile data:', matchProfile);
+        console.log('Current user picture:', currentUserPicture);
+    
+        const matchView = document.createElement('div');
+        matchView.className = 'match-view';
+        matchView.innerHTML = `
+            <div class="match-content">
+                <h2>It's a Match!</h2>
+                <div class="match-profiles">
+                    <img src="${currentUserPicture}" alt="Your profile" class="match-profile-pic">
+                    <img src="${matchProfile.profile_picture}" alt="${matchProfile.full_name}'s profile" class="match-profile-pic">
+                </div>
+                <p>You and ${matchProfile.full_name} have liked each other!</p>
+                <button id="continueSwipingBtn" class="btn btn-primary">Continue Swiping</button>
+            </div>
+        `;
+        
+        swipeContainer.innerHTML = '';
+        swipeContainer.appendChild(matchView);
+        if (buttonsContainer) buttonsContainer.style.display = 'none';
+    
+        document.getElementById('continueSwipingBtn').addEventListener('click', () => {
+            if (nextProfile) {
+                updateProfileCard(nextProfile);
+            } else {
+                redirectToNoMoreProfiles();
+            }
         });
     }
 
     function updateProfileCard(profile) {
+        if (!profile) {
+            console.error('No profile data provided to updateProfileCard');
+            showErrorModal('An error occurred while loading the next profile. Please try again.');
+            return;
+        }
+
         const profilePicture = profile.profile_picture ? profile.profile_picture : '/static/images/default-profile.png';
         const newCard = document.createElement('div');
         newCard.className = 'profile-card';
@@ -109,38 +172,10 @@ document.addEventListener('DOMContentLoaded', function() {
         
         swipeContainer.innerHTML = '';
         swipeContainer.appendChild(newCard);
-        buttonsContainer.style.display = 'flex';
+        if (buttonsContainer) buttonsContainer.style.display = 'flex';
 
         currentCard = newCard;
         setupSwipe();
-    }
-
-    function showMatchView(matchProfile, nextProfile) {
-        const matchView = document.createElement('div');
-        matchView.className = 'match-view';
-        matchView.innerHTML = `
-            <div class="match-content">
-                <h2>It's a Match!</h2>
-                <div class="match-profiles">
-                    <img src="${currentCard.querySelector('.profile-picture').src}" alt="Your profile" class="match-profile-pic">
-                    <img src="${matchProfile.profile_picture || '/static/images/default-profile.png'}" alt="${matchProfile.full_name}'s profile" class="match-profile-pic">
-                </div>
-                <p>You and ${matchProfile.full_name} have liked each other!</p>
-                <button id="continueSwipingBtn" class="btn btn-primary">Continue Swiping</button>
-            </div>
-        `;
-        
-        swipeContainer.innerHTML = '';
-        swipeContainer.appendChild(matchView);
-        buttonsContainer.style.display = 'none';
-
-        document.getElementById('continueSwipingBtn').addEventListener('click', () => {
-            if (nextProfile) {
-                updateProfileCard(nextProfile);
-            } else {
-                showNoMoreProfiles();
-            }
-        });
     }
 
     function showNoMoreProfiles() {
@@ -152,7 +187,20 @@ document.addEventListener('DOMContentLoaded', function() {
                 </div>
             </div>
         `;
-        buttonsContainer.style.display = 'none';
+        if (buttonsContainer) buttonsContainer.style.display = 'none';
+    }
+
+    function showErrorModal(message) {
+        const modal = document.createElement('div');
+        modal.className = 'error-modal';
+        modal.innerHTML = `
+            <div class="error-content">
+                <h3>Error</h3>
+                <p>${message}</p>
+                <button onclick="this.closest('.error-modal').remove()">Close</button>
+            </div>
+        `;
+        document.body.appendChild(modal);
     }
 
     function getCookie(name) {
@@ -168,6 +216,10 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
         return cookieValue;
+    }
+
+    function redirectToNoMoreProfiles() {
+        window.location.href = '{% url "entreprinder:no_more_profiles" %}';
     }
 
     if (likeButton) likeButton.addEventListener('click', () => swipeAction('like'));

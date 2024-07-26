@@ -1,9 +1,10 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.conf import settings
 
 class EntrepreneurProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
-    profile_picture = models.ImageField(upload_to='profile_pics', blank=True, null=True, default='profile_pics/default-profile.png')
+    profile_picture = models.ImageField(upload_to='profile_pics', blank=True, null=True)
     bio = models.TextField(max_length=500, blank=True)
     company = models.CharField(max_length=100, blank=True)
     industry = models.CharField(max_length=100)
@@ -12,6 +13,11 @@ class EntrepreneurProfile(models.Model):
 
     def __str__(self):
         return f"{self.user.username}'s profile"
+
+    def get_profile_picture_url(self):
+        if self.profile_picture and self.profile_picture.name:
+            return self.profile_picture.url
+        return f"{settings.STATIC_URL}images/default-profile.png"
 
 class Skill(models.Model):
     name = models.CharField(max_length=50, unique=True)
