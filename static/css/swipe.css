@@ -1,96 +1,110 @@
 .swipe-container {
-    max-width: 300px;
-    height: 450px;
-    margin: 20px auto;
+    max-width: 400px;
+    margin: 0 auto;
     position: relative;
+    height: 70vh;
 }
-
 .profile-card {
+    position: absolute;
     width: 100%;
     height: 100%;
-    top: 0;
-    left: 0;
-    background-color: white;
-    border-radius: 20px;
-    box-shadow: 0 10px 20px rgba(0,0,0,0.2);
-    transition: transform 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-    backface-visibility: hidden;
+    background-color: #fff;
+    border-radius: 10px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
     overflow: hidden;
+    transition: transform 0.3s ease-out;
 }
-
-.profile-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 15px 30px rgba(0,0,0,0.3);
-}
-
-.profile-card img {
+.profile-picture {
     width: 100%;
-    height: 250px;
+    height: 70%;
     object-fit: cover;
-    border-top-left-radius: 20px;
-    border-top-right-radius: 20px;
 }
-
 .profile-info {
-    padding: 15px;
+    padding: 20px;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+    color: #fff;
 }
-
 .profile-info h2 {
-    margin: 0 0 10px;
-    font-size: 1.4em;
-    color: #333;
+    margin: 0;
+    font-size: 24px;
 }
-
 .profile-info p {
     margin: 5px 0;
-    font-size: 0.9em;
-    color: #666;
+    font-size: 14px;
 }
-
 .swipe-buttons {
+    position: absolute;
+    bottom: 20px;
+    left: 0;
+    right: 0;
     display: flex;
     justify-content: center;
-    margin-top: 20px;
 }
-
-.swipe-buttons button {
-    font-size: 1.5em;
-    margin: 0 10px;
-    padding: 15px 25px;
+.swipe-button {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
     border: none;
-    border-radius: 50px;
-    cursor: pointer;
-    transition: all 0.3s ease;
+    font-size: 24px;
+    margin: 0 10px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    transition: transform 0.2s;
 }
-
-#dislike {
-    background-color: #ff4757;
-    color: white;
-}
-
-#like {
-    background-color: #2ed573;
-    color: white;
-}
-
-#dislike:hover, #like:hover {
+.swipe-button:hover {
     transform: scale(1.1);
 }
-
-@keyframes swipeLeft {
-    from {transform: translateX(0) rotate(0);}
-    to {transform: translateX(-1000px) rotate(-30deg);}
+#dislike {
+    background-color: #ff4f4f;
+    color: white;
 }
-
-@keyframes swipeRight {
-    from {transform: translateX(0) rotate(0);}
-    to {transform: translateX(1000px) rotate(30deg);}
+#like {
+    background-color: #4caf50;
+    color: white;
 }
-
-.swipe-left {
-    animation: swipeLeft 0.5s forwards;
+.match-view {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(76, 175, 80, 0.9);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: white;
+    text-align: center;
 }
-
-.swipe-right {
-    animation: swipeRight 0.5s forwards;
+.match-content {
+    max-width: 80%;
+}
+.match-profiles {
+    display: flex;
+    justify-content: center;
+    margin: 20px 0;
+}
+.match-profile-pic {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    object-fit: cover;
+    margin: 0 10px;
+    border: 3px solid white;
+}
+#continueSwipingBtn {
+    margin-top: 20px;
+    padding: 10px 20px;
+    font-size: 16px;
+    background-color: white;
+    color: #4caf50;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+}
+#continueSwipingBtn:hover {
+    background-color: #e0e0e0;
 }

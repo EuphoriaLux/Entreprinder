@@ -10,50 +10,65 @@
     <link rel="stylesheet" href="{% static 'css/custom.css' %}">
     {% block extra_css %}{% endblock %}
 </head>
-<body>
-    <header>
-        <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-            <div class="container">
-                <a class="navbar-brand" href="{% url 'entreprinder:home' %}">Entreprinder</a>
-                <!-- ... other navbar content ... -->
-                <div class="collapse navbar-collapse" id="navbarNav">
-                    <ul class="navbar-nav ms-auto">
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'entreprinder:home' %}">Home</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'entreprinder:about' %}">About</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'entreprinder:contact' %}">Contact</a>
-                        </li>
-                        {% if user.is_authenticated %}
+    <body>   
+        <header>
+            <nav class="navbar navbar-expand-lg navbar-custom">
+                <div class="container">
+                    <a class="navbar-brand" href="{% url 'entreprinder:home' %}">
+                        <i class="fas fa-handshake me-2"></i>Entreprinder
+                    </a>
+                    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                        <span class="navbar-toggler-icon"></span>
+                    </button>
+                    <div class="collapse navbar-collapse" id="navbarNav">
+                        <ul class="navbar-nav ms-auto">
                             <li class="nav-item">
-                                <a class="nav-link" href="{% url 'entreprinder:profile' %}">Profile</a>
+                                <a class="nav-link" href="{% url 'entreprinder:home' %}"><i class="fas fa-home me-1"></i>Home</a>
                             </li>
                             <li class="nav-item">
-                                <a class="nav-link" href="{% url 'entreprinder:entrepreneur_list' %}">Find Entrepreneurs</a>
+                                <a class="nav-link" href="{% url 'entreprinder:about' %}"><i class="fas fa-info-circle me-1"></i>About</a>
                             </li>
                             <li class="nav-item">
-                                <a class="nav-link" href="{% url 'entreprinder:matches' %}">Matches</a>
+                                <a class="nav-link" href="{% url 'entreprinder:contact' %}"><i class="fas fa-envelope me-1"></i>Contact</a>
                             </li>
-                            <li class="nav-item">
-                                <a class="nav-link" href="{% url 'account_logout' %}">Logout</a>
-                            </li>
-                        {% else %}
-                            <li class="nav-item">
-                                <a class="nav-link" href="{% url 'account_login' %}">Login</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link" href="{% url 'account_signup' %}">Sign Up</a>
-                            </li>
-                        {% endif %}
-                    </ul>
+                            {% if user.is_authenticated %}
+                                <li class="nav-item">
+                                    <a class="nav-link" href="{% url 'entreprinder:entrepreneur_list' %}"><i class="fas fa-search me-1"></i>Find Entrepreneurs</a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link" href="{% url 'entreprinder:swipe' %}"><i class="fas fa-exchange-alt me-1"></i>Swipe</a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link" href="{% url 'entreprinder:matches' %}"><i class="fas fa-users me-1"></i>Matches</a>
+                                </li>
+                                <li class="nav-item dropdown">
+                                    <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                        {% if user.entrepreneurprofile.profile_picture %}
+                                            <img src="{{ user.entrepreneurprofile.profile_picture.url }}" alt="User Avatar" class="user-avatar me-1">
+                                        {% else %}
+                                            <img src="{% static 'images/default-profile.png' %}" alt="Default Avatar" class="user-avatar me-1">
+                                        {% endif %}
+                                        {{ user.username }}
+                                    </a>
+                                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
+                                        <li><a class="dropdown-item" href="{% url 'entreprinder:profile' %}"><i class="fas fa-user me-2"></i>Profile</a></li>
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item" href="{% url 'account_logout' %}"><i class="fas fa-sign-out-alt me-2"></i>Logout</a></li>
+                                    </ul>
+                                </li>
+                            {% else %}
+                                <li class="nav-item">
+                                    <a class="nav-link" href="{% url 'account_login' %}"><i class="fas fa-sign-in-alt me-1"></i>Login</a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link" href="{% url 'account_signup' %}"><i class="fas fa-user-plus me-1"></i>Sign Up</a>
+                                </li>
+                            {% endif %}
+                        </ul>
+                    </div>
                 </div>
-            </div>
-        </nav>
-    </header>
-
+            </nav>
+        </header>
     <main class="container mt-4">
         {% block content %}
         {% endblock %}

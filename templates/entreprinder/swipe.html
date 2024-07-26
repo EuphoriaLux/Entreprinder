@@ -1,44 +1,48 @@
-<!-- Start of swipe.html -->
 {% extends "entreprinder/base.html" %}
-<!-- After extends -->
 {% load static %}
 
 {% block title %}Swipe - Entreprinder{% endblock %}
 
 {% block extra_css %}
-<!-- Debug: CSS block start -->
 <link rel="stylesheet" href="{% static 'css/swipe.css' %}">
-<!-- Debug: CSS block end -->
 {% endblock %}
 
 {% block content %}
-<!-- Debug: Content block start -->
-<h1>Swipe Page</h1>
-<div id="swipe-container">
-    {% for profile in profiles %}
-    <div class="profile-card" data-profile-id="{{ profile.id }}">
-        {% if profile.profile_picture %}
-            <img src="{{ profile.profile_picture.url }}" alt="{{ profile.user.username }}'s profile picture">
+<div class="container mt-5">
+    <div class="swipe-container" id="swipe-container">
+        {% if profile %}
+            <div class="profile-card" data-profile-id="{{ profile.id }}">
+                {% if profile.profile_picture %}
+                    <img src="{{ profile.profile_picture.url }}" alt="{{ profile.user.username }}'s profile picture" class="profile-picture">
+                {% else %}
+                    <img src="{% static 'images/default-profile.png' %}" alt="Default profile picture" class="profile-picture">
+                {% endif %}
+                <div class="profile-info">
+                    <h2>{{ profile.user.get_full_name }}</h2>
+                    <p><strong>{{ profile.industry }}</strong></p>
+                    <p>{{ profile.company }}</p>
+                    <p>{{ profile.bio|truncatewords:20 }}</p>
+                </div>
+            </div>
         {% else %}
-            <img src="{% static 'images/default-profile.png' %}" alt="Default profile picture">
+            <div class="profile-card">
+                <div class="profile-info text-center">
+                    <h2>No more profiles</h2>
+                    <p>Check back later for new matches!</p>
+                </div>
+            </div>
         {% endif %}
-        <div class="profile-info">
-            <h2>{{ profile.user.get_full_name }}</h2>
-            <p><strong>Company:</strong> {{ profile.company }}</p>
-            <p><strong>Industry:</strong> {{ profile.industry }}</p>
-            <p>{{ profile.bio|truncatewords:20 }}</p>
-        </div>
     </div>
-    {% empty %}
-    <p>No more profiles to show!</p>
-    {% endfor %}
-</div>
-<div class="swipe-buttons">
-    <button id="dislike" class="btn btn-danger"><i class="fas fa-times"></i></button>
-    <button id="like" class="btn btn-success"><i class="fas fa-heart"></i></button>
+    {% if profile %}
+        <div class="swipe-buttons">
+            <button id="dislike" class="swipe-button"><i class="fas fa-times"></i></button>
+            <button id="like" class="swipe-button"><i class="fas fa-heart"></i></button>
+        </div>
+    {% endif %}
 </div>
 {% endblock %}
 
 {% block extra_js %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
 <script src="{% static 'js/swipe.js' %}"></script>
 {% endblock %}
