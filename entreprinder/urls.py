@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from .views import RedisCacheTestView  # Make sure to import the view
 
 app_name = 'entreprinder'
 
@@ -13,4 +14,5 @@ urlpatterns = [
     path('swipe-action/', views.swipe_action, name='swipe_action'),
     path('matches/', views.matches, name='matches'),
     path('no-more-profiles/', views.no_more_profiles, name='no_more_profiles'),
+    path('test-redis/', RedisCacheTestView.as_view(), name='test-redis'),
 ]

@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let isSwipeInProgress = false;
 
     // Load the initial profile
-    if (initialProfile) {
+    if (typeof initialProfile !== 'undefined' && initialProfile !== null) {
         updateProfileCard(initialProfile);
     } else {
         showNoMoreProfiles();
@@ -23,13 +23,17 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             // Initialize new Hammer instance
             hammer = new Hammer(currentCard);
+            hammer.get('pan').set({ direction: Hammer.DIRECTION_HORIZONTAL });
             hammer.on('pan', handlePan);
             hammer.on('panend', handlePanEnd);
+            
+            // Prevent default behavior on the image to avoid dragging
+            currentCard.querySelector('.profile-picture').addEventListener('dragstart', (e) => e.preventDefault());
         }
     }
 
     function handlePan(event) {
-        if (isSwipeInProgress || !currentCard) return;
+        if (isSwipeInProgress) return;
         
         const xPos = event.deltaX;
         const rotate = xPos / 10;
@@ -39,7 +43,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function handlePanEnd(event) {
-        if (isSwipeInProgress || !currentCard) return;
+        if (isSwipeInProgress) return;
 
         const threshold = 150;
         let action = 'reset';
@@ -219,9 +223,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function redirectToNoMoreProfiles() {
-        window.location.href = '{% url "entreprinder:no_more_profiles" %}';
+        window.location.href = '/no-more-profiles/';  // Adjust this URL if necessary
     }
-
+    
     if (likeButton) likeButton.addEventListener('click', () => swipeAction('like'));
     if (dislikeButton) dislikeButton.addEventListener('click', () => swipeAction('dislike'));
 });

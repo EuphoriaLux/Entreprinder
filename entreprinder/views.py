@@ -11,7 +11,25 @@ from django.core.cache import cache
 from django.urls import reverse
 from django.core.serializers.json import DjangoJSONEncoder
 from django.contrib import messages
+from django.http import HttpResponse
+from django.views import View
 
+
+class RedisCacheTestView(View):
+    def get(self, request):
+        try:
+            # Try to set a value in the cache
+            cache.set('test_key', 'test_value', timeout=30)
+            
+            # Try to retrieve the value from the cache
+            cached_value = cache.get('test_key')
+            
+            if cached_value == 'test_value':
+                return HttpResponse("Redis cache is working correctly!")
+            else:
+                return HttpResponse("Redis cache test failed: Value not retrieved correctly.")
+        except Exception as e:
+            return HttpResponse(f"Redis cache test failed with error: {str(e)}")
 
 def home(request):
     return render(request, 'landing_page.html')
@@ -79,13 +97,12 @@ def swipe(request):
             'profile_picture': request.build_absolute_uri(profile_to_swipe.get_profile_picture_url()),
         }
         context = {
-            'profile': json.dumps(profile_data, cls=DjangoJSONEncoder),
+            'profile': json.dumps(profile_data),
             'current_user_picture': request.build_absolute_uri(current_user.get_profile_picture_url())
         }
+        return render(request, 'entreprinder/swipe.html', context)
     else:
-        context = {'profile': 'null', 'current_user_picture': request.build_absolute_uri(current_user.get_profile_picture_url())}
-    
-    return render(request, 'entreprinder/swipe.html', context)
+        return redirect(reverse('entreprinder:no_more_profiles'))
 
 @login_required
 def swipe_action(request):
@@ -142,6 +159,10 @@ def swipe_action(request):
     return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=400)
 
 @login_required
+def no_more_profiles(request):
+    return render(request, 'entreprinder/no_more_profiles.html')
+
+@login_required
 def matches(request):
     try:
         user_profile = EntrepreneurProfile.objects.get(user=request.user)
@@ -150,5 +171,3 @@ def matches(request):
     except Exception as e:
         return render(request, 'error.html', {'error_message': "An error occurred while loading your matches. Please try again later."})
     
-def no_more_profiles(request):
-    return render(request, 'entreprinder/no_more_profiles.html')

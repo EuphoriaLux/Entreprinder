@@ -5,6 +5,7 @@
 
 {% block extra_css %}
 <link rel="stylesheet" href="{% static 'css/swipe.css' %}">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
 {% endblock %}
 
 {% block content %}
@@ -13,8 +14,9 @@
         <!-- Profile card will be inserted here by JavaScript -->
     </div>
     <div class="swipe-buttons">
-        <button id="dislike" class="swipe-button">👎</button>
-        <button id="like" class="swipe-button">👍</button>
+        <button id="dislike" class="swipe-button">❌</button>
+        <button id="like" class="swipe-button">❤️</button>
+    </div>
     </div>
 </div>
 {% endblock %}
