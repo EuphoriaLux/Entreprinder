@@ -19,13 +19,18 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from django.views.static import serve
+from django.conf.urls.i18n import i18n_patterns
 
 urlpatterns = [
+    path('i18n/', include('django.conf.urls.i18n')),
+]
+
+urlpatterns += i18n_patterns(
     path('admin/', admin.site.urls),
-    path('', include('entreprinder.urls')),  # Include your app's URLs
+    path('', include('entreprinder.urls')),
     path('accounts/', include('allauth.urls')),
     path('media/<path:path>', serve, {'document_root': settings.MEDIA_ROOT}),
-]
+)
 
 
 if settings.DEBUG:

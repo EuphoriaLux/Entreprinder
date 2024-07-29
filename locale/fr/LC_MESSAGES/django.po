@@ -8,31 +8,32 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2024-07-27 23:04+0000\n"
+"POT-Creation-Date: 2024-07-29 19:58+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
-"Language: \n"
+"Language: fr\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n > 1);\n"
-#: azureproject/settings.py:193
-msgid "English"
-msgstr ""
 
 #: azureproject/settings.py:194
-msgid "German"
-msgstr ""
+msgid "English"
+msgstr "Anglais"
 
 #: azureproject/settings.py:195
+msgid "German"
+msgstr "Allemand"
+
+#: azureproject/settings.py:196
 msgid "French"
-msgstr ""
+msgstr "Français"
 
 #: templates/account/email_confirm.html:5
 #: templates/account/email_confirm.html:10
 msgid "Confirm E-mail Address"
-msgstr ""
+msgstr "Confirmer l'adresse e-mail"
 
 #: templates/account/email_confirm.html:16
 #, python-format
@@ -40,10 +41,12 @@ msgid ""
 "Please confirm that <a href=\"mailto:%(email)s\">%(email)s</a> is an e-mail "
 "address for user %(user_display)s."
 msgstr ""
+"Veuillez confirmer que <a href=\"mailto:%(email)s\">%(email)s</a> est une adresse "
+"e-mail pour l'utilisateur %(user_display)s."
 
 #: templates/account/email_confirm.html:20
 msgid "Confirm"
-msgstr ""
+msgstr "Confirmer"
 
 #: templates/account/email_confirm.html:27
 #, python-format
@@ -51,11 +54,13 @@ msgid ""
 "This e-mail confirmation link expired or is invalid. Please <a href="
 "\"%(email_url)s\">issue a new e-mail confirmation request</a>."
 msgstr ""
+"Ce lien de confirmation par e-mail a expiré ou n'est pas valide. Veuillez <a href="
+"\"%(email_url)s\">faire une nouvelle demande de confirmation par e-mail</a>."
 
 #: templates/account/login.html:5 templates/account/login.html:10
 #: templates/account/login.html:38
 msgid "Sign In"
-msgstr ""
+msgstr "Se connecter"
 
 #: templates/account/login.html:15
 #, python-format
@@ -65,6 +70,10 @@ msgid ""
 "\">sign up</a>\n"
 "    for a %(site_name)s account and sign in below:"
 msgstr ""
+"Veuillez vous connecter avec l'un\n"
+"    de vos comptes tiers existants. Ou, <a href=\"%(signup_url)s"
+"\">inscrivez-vous</a>\n"
+"    pour un compte %(site_name)s et connectez-vous ci-dessous :"
 
 #: templates/account/login.html:28
 #, python-format
@@ -72,17 +81,108 @@ msgid ""
 "If you have not created an account yet, then please\n"
 "    <a href=\"%(signup_url)s\">sign up</a> first."
 msgstr ""
+"Si vous n'avez pas encore créé de compte, veuillez\n"
+"    d'abord <a href=\"%(signup_url)s\">vous inscrire</a>."
 
 #: templates/account/signup.html:4
 msgid "Signup"
-msgstr ""
+msgstr "S'inscrire"
 
 #: templates/account/signup.html:9 templates/account/signup.html:19
 msgid "Sign Up"
-msgstr ""
+msgstr "S'inscrire"
 
 #: templates/account/signup.html:11
 #, python-format
 msgid ""
 "Already have an account? Then please <a href=\"%(login_url)s\">sign in</a>."
 msgstr ""
+"Vous avez déjà un compte ? Alors veuillez <a href=\"%(login_url)s\">vous connecter</a>."
+
+#: templates/entreprinder/base.html:28
+msgid "Home"
+msgstr "Accueil"
+
+#: templates/entreprinder/base.html:31
+msgid "About"
+msgstr "À propos"
+
+#: templates/entreprinder/base.html:34
+msgid "Contact"
+msgstr "Contact"
+
+#: templates/entreprinder/base.html:52
+msgid "Find Entrepreneurs"
+msgstr "Trouver des entrepreneurs"
+
+#: templates/landing_page.html:4
+msgid "Entreprinder - Connect Entrepreneurs in Luxembourg"
+msgstr "Entreprinder - Connecter les entrepreneurs au Luxembourg"
+
+#: templates/landing_page.html:9
+msgid "Welcome to Entreprinder"
+msgstr "Bienvenue sur Entreprinder"
+
+#: templates/landing_page.html:10
+msgid ""
+"The premier platform for entrepreneurs in Luxembourg to connect, "
+"collaborate, and grow their businesses together."
+msgstr ""
+"La première plateforme permettant aux entrepreneurs au Luxembourg de se connecter, "
+"collaborer et développer leurs entreprises ensemble."
+
+#: templates/landing_page.html:11
+msgid "Join Now"
+msgstr "Rejoignez-nous maintenant"
+
+#: templates/landing_page.html:20
+msgid "Connect"
+msgstr "Se connecter"
+
+#: templates/landing_page.html:21
+msgid "Network with like-minded entrepreneurs in Luxembourg"
+msgstr "Réseautez avec des entrepreneurs partageant les mêmes idées au Luxembourg"
+
+#: templates/landing_page.html:29
+msgid "Collaborate"
+msgstr "Collaborer"
+
+#: templates/landing_page.html:30
+msgid "Find partners for your next big project"
+msgstr "Trouvez des partenaires pour votre prochain grand projet"
+
+#: templates/landing_page.html:38
+msgid "Grow"
+msgstr "Grandir"
+
+#: templates/landing_page.html:39
+msgid "Access resources and support to scale your business"
+msgstr "Accédez aux ressources et au soutien pour développer votre entreprise"
+
+#: templates/landing_page.html:47
+msgid "Why Choose Entreprinder?"
+msgstr "Pourquoi choisir Entreprinder ?"
+
+#: templates/landing_page.html:49
+msgid "Exclusive focus on Luxembourg's entrepreneurial ecosystem"
+msgstr "Focus exclusif sur l'écosystème entrepreneurial du Luxembourg"
+
+#: templates/landing_page.html:50
+msgid "Easy-to-use platform for finding and connecting with potential partners"
+msgstr "Plateforme facile à utiliser pour trouver et se connecter avec des partenaires potentiels"
+
+#: templates/landing_page.html:51
+msgid "Access to local events, workshops, and networking opportunities"
+msgstr "Accès à des événements locaux, des ateliers et des opportunités de networking"
+
+#: templates/landing_page.html:52
+msgid "Resources tailored to Luxembourg's business environment"
+msgstr "Ressources adaptées à l'environnement des affaires au Luxembourg"
+
+#: templates/landing_page.html:59
+msgid "Ready to take your entrepreneurial journey to the next level?"
+msgstr "Prêt à faire passer votre parcours entrepreneurial au niveau supérieur ?"
+
+#: templates/landing_page.html:60
+msgid "Get Started"
+msgstr "Commencer"

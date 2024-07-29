@@ -1,10 +1,12 @@
+{% load i18n %}
+{% load static %}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ LANGUAGE_CODE }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Entreprinder{% endblock %}</title>
-    {% load static %}
+
     <link rel="stylesheet" href="{% static 'bootstrap/css/bootstrap.min.css' %}">
     <link rel="stylesheet" href="{% static 'fontawesome/css/all.min.css' %}">
     <link rel="stylesheet" href="{% static 'css/custom.css' %}">
@@ -23,17 +25,31 @@
                     <div class="collapse navbar-collapse" id="navbarNav">
                         <ul class="navbar-nav ms-auto">
                             <li class="nav-item">
-                                <a class="nav-link" href="{% url 'entreprinder:home' %}"><i class="fas fa-home me-1"></i>Home</a>
+                                <a class="nav-link" href="{% url 'entreprinder:home' %}"><i class="fas fa-home me-1"></i>{% trans "Home" %}</a>
                             </li>
                             <li class="nav-item">
-                                <a class="nav-link" href="{% url 'entreprinder:about' %}"><i class="fas fa-info-circle me-1"></i>About</a>
+                                <a class="nav-link" href="{% url 'entreprinder:about' %}"><i class="fas fa-info-circle me-1"></i>{% trans "About" %}</a>
                             </li>
                             <li class="nav-item">
-                                <a class="nav-link" href="{% url 'entreprinder:contact' %}"><i class="fas fa-envelope me-1"></i>Contact</a>
+                                <a class="nav-link" href="{% url 'entreprinder:contact' %}"><i class="fas fa-envelope me-1"></i>{% trans "Contact" %}</a>
                             </li>
+                            <form action="{% url 'set_language' %}" method="post" class="d-flex">
+                                {% csrf_token %}
+                                <input name="next" type="hidden" value="{{ redirect_to }}">
+                                <select name="language" class="form-select me-2" onchange="this.form.submit()">
+                                    {% get_current_language as LANGUAGE_CODE %}
+                                    {% get_available_languages as LANGUAGES %}
+                                    {% get_language_info_list for LANGUAGES as languages %}
+                                    {% for language in languages %}
+                                        <option value="{{ language.code }}"{% if language.code == LANGUAGE_CODE %} selected{% endif %}>
+                                            {{ language.name_local }} ({{ language.code }})
+                                        </option>
+                                    {% endfor %}
+                                </select>
+                            </form>
                             {% if user.is_authenticated %}
                                 <li class="nav-item">
-                                    <a class="nav-link" href="{% url 'entreprinder:entrepreneur_list' %}"><i class="fas fa-search me-1"></i>Find Entrepreneurs</a>
+                                    <a class="nav-link" href="{% url 'entreprinder:entrepreneur_list' %}"><i class="fas fa-search me-1"></i>{% trans "Find Entrepreneurs" %}</a>
                                 </li>
                                 <li class="nav-item">
                                     <a class="nav-link" href="{% url 'entreprinder:swipe' %}"><i class="fas fa-exchange-alt me-1"></i>Swipe</a>
@@ -53,7 +69,7 @@
                                     <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarDropdown">
                                         <li><a class="dropdown-item" href="{% url 'entreprinder:profile' %}"><i class="fas fa-user me-2"></i>Profile</a></li>
                                         <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item" href="{% url 'account_logout' %}"><i class="fas fa-sign-out-alt me-2"></i>Logout</a></li>
+                                        <li><a class="dropdown-item" href="{% url 'account_logout' %}"><i class="fas fa-sign-out-alt me-2"></i>{% trans Logout %}</a></li>
                                     </ul>
                                 </li>
                             {% else %}
