@@ -1,6 +1,6 @@
 
 from django.contrib import admin
-from .models import EntrepreneurProfile, Skill, EntrepreneurSkill, Match, Like
+from .models import EntrepreneurProfile, Skill, Match, Like
 
 @admin.register(EntrepreneurProfile)
 class EntrepreneurProfileAdmin(admin.ModelAdmin):
@@ -12,12 +12,6 @@ class EntrepreneurProfileAdmin(admin.ModelAdmin):
 class SkillAdmin(admin.ModelAdmin):
     list_display = ('name',)
     search_fields = ('name',)
-
-@admin.register(EntrepreneurSkill)
-class EntrepreneurSkillAdmin(admin.ModelAdmin):
-    list_display = ('entrepreneur', 'skill')
-    list_filter = ('skill',)
-    search_fields = ('entrepreneur__user__username', 'skill__name')
 
 @admin.register(Match)
 class MatchAdmin(admin.ModelAdmin):
