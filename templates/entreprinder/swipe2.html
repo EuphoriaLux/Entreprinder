@@ -1,0 +1,38 @@
+{% extends "entreprinder/base.html" %}
+{% load static %}
+{% load crispy_forms_tags %}
+
+{% block content %}
+<div class="container">
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <div class="card">
+                {% if profile.profile_picture %}
+                    <img src="{{ profile.profile_picture.url }}" class="card-img-top" alt="{{ profile.user.username }}'s picture">
+                {% else %}
+                    <img src="{% static 'images/default-profile.png' %}" class="card-img-top" alt="Default profile picture">
+                {% endif %}
+                <div class="card-body">
+                    <h5 class="card-title">{{ profile.user.get_full_name }}</h5>
+                    <p class="card-text"><strong>Company:</strong> {{ profile.company }}</p>
+                    <p class="card-text"><strong>Industry:</strong> {{ profile.industry }}</p>
+                    <p class="card-text">{{ profile.bio|truncatewords:50 }}</p>
+                    {% crispy form %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function submitForm(action) {
+    var form = document.getElementById('swipe-form');
+    var actionInput = document.createElement('input');
+    actionInput.type = 'hidden';
+    actionInput.name = 'action';
+    actionInput.value = action;
+    form.appendChild(actionInput);
+    form.submit();
+}
+</script>
+{% endblock %}

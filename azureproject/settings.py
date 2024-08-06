@@ -45,6 +45,9 @@ INSTALLED_APPS = [
     'allauth.account',
     'allauth.socialaccount',
     'entreprinder',
+    'crispy_forms',
+    'crispy_bootstrap5',  # If you're using Bootstrap 5
+    'matching',
 ]
 
 MIDDLEWARE = [
@@ -157,24 +160,33 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
+CRISPY_ALLOWED_TEMPLATE_PACKS = "bootstrap5"
+CRISPY_TEMPLATE_PACK = "bootstrap5"
 
 AUTHENTICATION_BACKENDS = [
     'django.contrib.auth.backends.ModelBackend',
     'allauth.account.auth_backends.AuthenticationBackend',
 ]
 
-# AllAuth specific settings
-ACCOUNT_AUTHENTICATION_METHOD = 'username_email'
+# AllAuth settings
+ACCOUNT_AUTHENTICATION_METHOD = "email"
 ACCOUNT_EMAIL_REQUIRED = True
-ACCOUNT_EMAIL_VERIFICATION = 'mandatory'
-ACCOUNT_SIGNUP_EMAIL_ENTER_TWICE = True
-ACCOUNT_USERNAME_MIN_LENGTH = 4
-LOGIN_URL = '/accounts/login/'
-LOGIN_REDIRECT_URL = '/'
+ACCOUNT_USERNAME_REQUIRED = False
+ACCOUNT_UNIQUE_EMAIL = True
+ACCOUNT_EMAIL_VERIFICATION = "mandatory"
+ACCOUNT_SIGNUP_PASSWORD_ENTER_TWICE = True
+ACCOUNT_SESSION_REMEMBER = True
 
-# Email settings (for development)
+LOGIN_REDIRECT_URL = '/'  # or wherever you want users to go after login
+
+# Use CustomSignupForm
+ACCOUNT_FORMS = {'signup': 'entreprinder.forms.CustomSignupForm'}
+
+# Specify where to redirect after successful sign-up
+ACCOUNT_SIGNUP_REDIRECT_URL = '/profile/'  # Redirect to profile page after signup
+
+# Email backend (for development)
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-
 CACHES = {
         "default": {  
             "BACKEND": "django_redis.cache.RedisCache",

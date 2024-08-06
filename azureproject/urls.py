@@ -14,6 +14,7 @@ urlpatterns += i18n_patterns(
     path('', views.home, name='home'),
     path('', include('entreprinder.urls')),
     path('accounts/', include('allauth.urls')),
+    path('matching/', include('matching.urls')),
 )
 
 if settings.DEBUG:
