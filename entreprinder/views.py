@@ -2,7 +2,8 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import redirect, render
 from .forms import EntrepreneurProfileForm
-from .models import EntrepreneurProfile, Like
+from .models import EntrepreneurProfile
+from matching.models import Like
 
 def home(request):
     return render(request, 'landing_page.html')

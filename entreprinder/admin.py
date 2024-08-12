@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import EntrepreneurProfile, Skill, Match, Like, Industry
+from .models import EntrepreneurProfile, Skill, Industry
 
 @admin.register(Industry)
 class IndustryAdmin(admin.ModelAdmin):
@@ -24,25 +24,6 @@ class EntrepreneurProfileAdmin(admin.ModelAdmin):
 class SkillAdmin(admin.ModelAdmin):
     list_display = ('name',)
     search_fields = ('name',)
-
-class MatchInline(admin.TabularInline):
-    model = Match
-    fk_name = 'entrepreneur1'
-    extra = 1
-
-@admin.register(Match)
-class MatchAdmin(admin.ModelAdmin):
-    list_display = ('entrepreneur1', 'entrepreneur2', 'created_at')
-    list_filter = ('created_at',)
-    search_fields = ('entrepreneur1__user__username', 'entrepreneur2__user__username')
-    date_hierarchy = 'created_at'
-
-@admin.register(Like)
-class LikeAdmin(admin.ModelAdmin):
-    list_display = ('liker', 'liked', 'created_at')
-    list_filter = ('created_at',)
-    search_fields = ('liker__user__username', 'liked__user__username')
-    date_hierarchy = 'created_at'
 
 # Customize the admin site header and title
 admin.site.site_header = "Entreprinder Administration"
