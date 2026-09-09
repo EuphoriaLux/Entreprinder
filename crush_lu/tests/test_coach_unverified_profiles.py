@@ -357,6 +357,58 @@ class CoachUnverifiedProfilesListTests(CoachUnverifiedBase):
 
         self.assertEqual(self._names(resp), {"Booked"})
 
+    def test_upcoming_signal_ignores_applied_and_no_show_registrations(self):
+        """The badge links to the door scanner, so it must mean a door row.
+
+        `coach_event_checkin` renders `SEAT_HOLDING_STATUSES` plus the
+        waitlist. An "applied" curated registration is an expression of
+        interest and explicitly not a seat, so accepting everything but
+        "cancelled" sent the coach to a scanner where the member has no row.
+        """
+        from crush_lu.models import EventRegistration
+
+        applicant = self._profile("applied@example.com", name="Applicant")
+        EventRegistration.objects.create(
+            event=self.event, user=applicant.user, status="applied"
+        )
+        booked = self._profile("seat@example.com", name="Seated")
+        EventRegistration.objects.create(
+            event=self.event, user=booked.user, status="confirmed"
+        )
+        waitlisted = self._profile("wait@example.com", name="Waiting")
+        EventRegistration.objects.create(
+            event=self.event, user=waitlisted.user, status="waitlist"
+        )
+
+        self.client.force_login(self.coach_user)
+        resp = self.client.get(self._list_url(), {"signal": "upcoming"})
+
+        self.assertEqual(self._names(resp), {"Seated", "Waiting"})
+
+    def test_unclaimed_submission_still_counts_as_unowned(self):
+        """`coach=NULL` is the Verification Channel's unclaimed state.
+
+        Those are precisely the profiles "No coach owns it" exists to surface,
+        so keying the signal on an open row alone made the filter exclude the
+        cases it is named after.
+        """
+        from crush_lu.models import ProfileSubmission
+
+        unclaimed = self._profile("unclaimed@example.com", name="Unclaimed")
+        ProfileSubmission.objects.create(
+            profile=unclaimed, status="pending", coach=None
+        )
+        claimed = self._profile("claimed@example.com", name="Claimed")
+        ProfileSubmission.objects.create(
+            profile=claimed, status="pending", coach=self.other_coach
+        )
+        self._profile("nosub@example.com", name="NoSub")
+
+        self.client.force_login(self.coach_user)
+        resp = self.client.get(self._list_url(), {"signal": "unowned"})
+
+        self.assertEqual(self._names(resp), {"Unclaimed", "NoSub"})
+
     def test_non_coach_is_redirected(self):
         member = self._user("member@example.com")
         self.client.force_login(member)
@@ -578,6 +630,25 @@ class CoachVerifyMemberTests(CoachUnverifiedBase):
 
         sync.assert_called_once()
         self.assertEqual(sync.call_args.kwargs["instance"].pk, profile.pk)
+
+    def test_member_without_crushlu_consent_cannot_be_verified(self):
+        """The list filters these out; the endpoint must refuse independently.
+
+        Otherwise a posted id verifies somebody who abandoned the consent
+        screen, writing an approval record and mailing them about it.
+        """
+        profile = self._profile("noconsent@example.com")
+        self.UserDataConsent.objects.filter(user=profile.user).update(
+            crushlu_consent_given=False
+        )
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects") as side:
+            self._post(profile)
+
+        profile.refresh_from_db()
+        self.assertEqual(profile.verification_status, "pending")
+        side.assert_not_called()
 
     def test_non_coach_cannot_verify(self):
         profile = self._profile("target@example.com")

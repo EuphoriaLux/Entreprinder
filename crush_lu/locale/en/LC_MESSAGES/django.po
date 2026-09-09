@@ -28103,3 +28103,7 @@ msgstr ""
 #: views_coach.py
 msgid "This member is banned from Crush.lu."
 msgstr ""
+
+#: views_coach.py
+msgid "This member has not consented to Crush.lu."
+msgstr ""

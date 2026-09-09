@@ -41486,3 +41486,7 @@ msgstr "Le compte de ce membre n'est pas actif."
 #: views_coach.py
 msgid "This member is banned from Crush.lu."
 msgstr "Ce membre est banni de Crush.lu."
+
+#: views_coach.py
+msgid "This member has not consented to Crush.lu."
+msgstr "Ce membre n'a pas donné son consentement à Crush.lu."

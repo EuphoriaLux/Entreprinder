@@ -1061,6 +1061,13 @@ UNVERIFIED_SIGNAL_FILTERS = (
     "unowned",  # no open submission: no coach is carrying this one
 )
 
+#: Registration statuses `coach_event_checkin` actually renders — its own
+#: roster is `SEAT_HOLDING_STATUSES` plus the waitlist. "applied" is an
+#: expression of interest and explicitly not a seat (models/events.py), and
+#: "no_show" is recorded after the fact. Accepting everything-but-cancelled
+#: sent a coach to a scanner where the member has no row at all.
+DOOR_VISIBLE_REGISTRATION_STATUSES = tuple(SEAT_HOLDING_STATUSES) + ("waitlist",)
+
 UNVERIFIED_SORT_CHOICES = {
     "recent": _("Recently updated"),
     "waiting": _("Waiting longest"),
@@ -1106,8 +1113,9 @@ def _unverified_signal_annotations(now, live_or_future_event_ids):
         # the same one `_annotate_unverified_page` renders from, so the filter
         # and the badge cannot disagree.
         "sig_upcoming": Exists(
-            seat_held.filter(event_id__in=live_or_future_event_ids).exclude(
-                status="cancelled"
+            seat_held.filter(
+                event_id__in=live_or_future_event_ids,
+                status__in=DOOR_VISIBLE_REGISTRATION_STATUSES,
             )
         ),
         # Two providers reach LuxID and only one of them is unambiguous — see
@@ -1120,10 +1128,15 @@ def _unverified_signal_annotations(now, live_or_future_event_ids):
                 user_id=OuterRef("user_id"), status="active"
             )
         ),
+        # A coach, not merely an open row: `coach=NULL` is the Verification
+        # Channel's unclaimed state, and those are exactly the profiles the
+        # "No coach owns it" filter exists to surface. Keying on the row alone
+        # made the badge contradict its own label.
         "sig_owned": Exists(
             ProfileSubmission.objects.filter(
                 profile_id=OuterRef("pk"),
                 status__in=ProfileSubmission.ACTIVE_REVIEW_STATUSES,
+                coach__isnull=False,
             )
         ),
     }
@@ -1163,8 +1176,8 @@ def _annotate_unverified_page(profiles, now, live_or_future_event_ids):
         EventRegistration.objects.filter(
             user_id__in=user_ids,
             event_id__in=live_or_future_event_ids,
+            status__in=DOOR_VISIBLE_REGISTRATION_STATUSES,
         )
-        .exclude(status="cancelled")
         .select_related("event")
         .order_by("event__date_time")
     ):
@@ -3693,7 +3706,16 @@ def coach_verify_member(request, user_id):
     if not member.is_active or not profile.is_active:
         messages.error(request, _("This member's account is not active."))
         return redirect("crush_lu:coach_member_overview", user_id=user_id)
-    if UserDataConsent.objects.filter(user=member, crushlu_banned=True).exists():
+
+    consent = UserDataConsent.objects.filter(user=member).first()
+    if consent is None or not consent.crushlu_consent_given:
+        # The list filters these out; this endpoint has to refuse them
+        # independently. Verifying somebody who abandoned the consent screen
+        # would write an approval record, pay a referrer and mail an approval
+        # to an account that never agreed to the Crush.lu profile layer.
+        messages.error(request, _("This member has not consented to Crush.lu."))
+        return redirect("crush_lu:coach_member_overview", user_id=user_id)
+    if consent.crushlu_banned:
         messages.error(request, _("This member is banned from Crush.lu."))
         return redirect("crush_lu:coach_member_overview", user_id=user_id)
 
