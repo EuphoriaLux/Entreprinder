@@ -16,6 +16,8 @@ from django.db.models import (
     IntegerField,
     Avg,
     F,
+    Exists,
+    OuterRef,
     ExpressionWrapper,
     DurationField,
 )
@@ -36,7 +38,9 @@ from .models import (
     CoachSession,
     EventConnection,
     CallAttempt,
+    PremiumMembership,
     UserActivity,
+    UserDataConsent,
     CrushSpark,
 )
 from .models.events import SEAT_HOLDING_STATUSES
@@ -67,6 +71,11 @@ from .services.profile_verification import (
     claim_profile_verification,
     transition_unverified_profile,
 )
+
+# Referral credit + welcome email. Imported from the door rather than
+# reimplemented so a member verified from the coach panel gets exactly what a
+# member verified at an event gets — the two paths cannot drift.
+from .views_checkin import _run_post_verification_side_effects
 
 
 # Coach views
@@ -1020,6 +1029,275 @@ def coach_profiles(request):
         "pre_screening_enabled": getattr(_settings, "PRE_SCREENING_ENABLED", False),
     }
     return render(request, "crush_lu/coach_profiles.html", context)
+
+
+# ============================================================================
+# UNVERIFIED PROFILES — team-wide discovery surface
+# ============================================================================
+#
+# Why this exists alongside the Profile Queue and the Verification Channel:
+# both of those are built on ``ProfileSubmission``. Since the verification
+# pivot, `views_profile.submit_profile` deliberately creates **no** submission
+# row ("new submitters do NOT enter the coach-review queue"), and
+# `expire_stale_submissions` closed out the pre-pivot rows while leaving their
+# profiles at ``pending``. A queue keyed on submissions therefore cannot see
+# the people it most needs to — today's entire waiting cohort. This page is
+# keyed on ``CrushProfile.verification_status`` instead, so everyone who is
+# not verified appears: submission or not, claimed by any coach or none.
+
+#: Individually selectable states. ``verified`` is the only value the page
+#: excludes outright, so a status added to ``VERIFICATION_STATUS_CHOICES``
+#: later still shows up under "All" before it earns its own chip.
+UNVERIFIED_STATUS_FILTERS = ("pending", "incomplete", "rejected")
+
+#: Signals answering "why is this one still stuck?" — each maps to a concrete
+#: next action rather than to a database column.
+UNVERIFIED_SIGNAL_FILTERS = (
+    "attended",  # stood at a door and left unverified — the actual leak
+    "upcoming",  # booked on a future event: verifiable at that door
+    "no_photo",  # `_auto_verify_on_attendance` skips them; needs a photo first
+    "luxid",  # LuxID linked yet unverified — should not be possible
+    "premium",  # only their own assigned coach may verify them
+    "unowned",  # no open submission: no coach is carrying this one
+)
+
+UNVERIFIED_SORT_CHOICES = {
+    "recent": _("Recently updated"),
+    "waiting": _("Waiting longest"),
+    "name": _("Name (A-Z)"),
+}
+
+
+def _unverified_signal_annotations(now):
+    """``Exists`` annotations shared by the filter chips and the row badges.
+
+    Annotated unconditionally rather than per selected filter: the template
+    renders every signal as a badge on every row, so deferring them would only
+    move the same work into a per-row property and make it N+1.
+    """
+    seat_held = EventRegistration.objects.filter(user_id=OuterRef("user_id"))
+    native_luxid, oidc_luxid = CrushProfile.luxid_account_querysets(OuterRef("user_id"))
+
+    return {
+        "sig_attended": Exists(seat_held.filter(status="attended")),
+        # `live_lookback_cutoff`, not `now`: an event running right this minute
+        # is still a door the member can be verified at, and this has to agree
+        # with the per-page upcoming list `_annotate_unverified_page` builds.
+        "sig_upcoming": Exists(
+            seat_held.filter(
+                event__date_time__gte=MeetupEvent.live_lookback_cutoff(now),
+            ).exclude(status="cancelled")
+        ),
+        # Two providers reach LuxID and only one of them is unambiguous — see
+        # `CrushProfile.luxid_account_querysets`. Kept as two annotations OR-ed
+        # at filter time so neither subquery has to be re-derived.
+        "sig_luxid_native": Exists(native_luxid),
+        "sig_luxid_oidc": Exists(oidc_luxid),
+        "sig_premium": Exists(
+            PremiumMembership.objects.filter(
+                user_id=OuterRef("user_id"), status="active"
+            )
+        ),
+        "sig_owned": Exists(
+            ProfileSubmission.objects.filter(
+                profile_id=OuterRef("pk"),
+                status__in=ProfileSubmission.ACTIVE_REVIEW_STATUSES,
+            )
+        ),
+    }
+
+
+def _apply_unverified_signal_filter(profiles, signal):
+    """Narrow to one signal. Unknown values are rejected by the caller."""
+    if signal == "attended":
+        return profiles.filter(sig_attended=True)
+    if signal == "upcoming":
+        return profiles.filter(sig_upcoming=True)
+    if signal == "no_photo":
+        return profiles.filter(Q(photo_1="") | Q(photo_1__isnull=True))
+    if signal == "luxid":
+        return profiles.filter(Q(sig_luxid_native=True) | Q(sig_luxid_oidc=True))
+    if signal == "premium":
+        return profiles.filter(sig_premium=True)
+    if signal == "unowned":
+        return profiles.filter(sig_owned=False)
+    return profiles
+
+
+def _annotate_unverified_page(profiles, now):
+    """Attach per-row detail to the rows actually rendered.
+
+    Deliberately runs after pagination. The signal booleans are cheap enough
+    to annotate across the whole queryset, but the event lists and submission
+    rows behind them are not — and only one page of them is ever shown.
+    """
+    if not profiles:
+        return
+
+    user_ids = [p.user_id for p in profiles]
+
+    upcoming_by_user = {}
+    for reg in (
+        EventRegistration.objects.filter(
+            user_id__in=user_ids,
+            event__date_time__gte=MeetupEvent.live_lookback_cutoff(now),
+        )
+        .exclude(status="cancelled")
+        .select_related("event")
+        .order_by("event__date_time")
+    ):
+        # The cutoff is a bounded pre-filter, not the answer: it admits events
+        # that started within the duration ceiling and have since ended.
+        if reg.event.end_time >= now:
+            upcoming_by_user.setdefault(reg.user_id, []).append(reg)
+
+    attended_by_user = {
+        row["user_id"]: row["n"]
+        for row in EventRegistration.objects.filter(
+            user_id__in=user_ids, status="attended"
+        )
+        .values("user_id")
+        .annotate(n=Count("id"))
+    }
+
+    # The newest submission per profile, expired rows included: "closed out by
+    # the pivot" is a distinct and useful answer to "why is nobody on this?",
+    # so this reads the raw latest row rather than `latest_for_profile`, which
+    # collapses that case to None.
+    latest_submissions = {}
+    for submission in (
+        ProfileSubmission.objects.filter(profile__user_id__in=user_ids)
+        .select_related("coach__user")
+        .order_by("profile_id", "-submitted_at")
+    ):
+        latest_submissions.setdefault(submission.profile_id, submission)
+
+    for profile in profiles:
+        profile.upcoming_events = upcoming_by_user.get(profile.user_id, [])
+        profile.attended_count = attended_by_user.get(profile.user_id, 0)
+        profile.latest_submission = latest_submissions.get(profile.id)
+        profile.has_luxid = bool(
+            getattr(profile, "sig_luxid_native", False)
+            or getattr(profile, "sig_luxid_oidc", False)
+        )
+
+
+@coach_required
+def coach_unverified_profiles(request):
+    """Every profile still waiting for verification, across the whole team.
+
+    Discovery only: a row's action opens `coach_member_overview`, where the
+    coach sees the photo, date of birth and event history before deciding.
+    Verification itself is a POST from that page — this list never verifies
+    anyone, because approving somebody straight off a list is exactly the
+    unchecked decision the in-person flow exists to prevent.
+    """
+    coach = request.coach
+    now = timezone.now()
+
+    status_filter = (request.GET.get("status") or "all").strip().lower()
+    if status_filter not in UNVERIFIED_STATUS_FILTERS:
+        status_filter = "all"
+
+    signal_filter = (request.GET.get("signal") or "").strip().lower()
+    if signal_filter not in UNVERIFIED_SIGNAL_FILTERS:
+        signal_filter = ""
+
+    sort_mode = (request.GET.get("sort") or "recent").strip().lower()
+    if sort_mode not in UNVERIFIED_SORT_CHOICES:
+        sort_mode = "recent"
+
+    query = (request.GET.get("q") or "").strip()
+
+    # Banned members are excluded from every other coach-facing surface
+    # (campaign segments, Connect invites). Resurfacing them here would hand
+    # the team review work on people who are not coming back.
+    banned_user_ids = UserDataConsent.objects.filter(crushlu_banned=True).values_list(
+        "user_id", flat=True
+    )
+
+    profiles = (
+        CrushProfile.objects.filter(is_active=True, user__is_active=True)
+        .exclude(verification_status="verified")
+        .exclude(user_id__in=banned_user_ids)
+        .select_related("user", "assigned_coach__user")
+        .annotate(**_unverified_signal_annotations(now))
+    )
+
+    if query:
+        # `display_name` is a property, not a column — it reads
+        # `user.get_full_name()`, `user.first_name` or the username stem
+        # depending on `show_full_name`. Searching its inputs is both the only
+        # thing the database can do and the more useful behaviour: a coach
+        # looking for someone who hides their surname still finds them.
+        profiles = profiles.filter(
+            Q(user__first_name__icontains=query)
+            | Q(user__last_name__icontains=query)
+            | Q(user__username__icontains=query)
+            | Q(user__email__icontains=query)
+        )
+
+    # Chip counts describe the searched set, not the whole table: a coach who
+    # has typed a name wants to know where *that* person sits, not how many
+    # rejected profiles exist globally.
+    status_counts = {
+        row["verification_status"]: row["n"]
+        for row in profiles.values("verification_status").annotate(n=Count("id"))
+    }
+    status_chips = [
+        {"value": "all", "label": _("All"), "count": sum(status_counts.values())}
+    ] + [
+        {"value": value, "label": label, "count": status_counts.get(value, 0)}
+        for value, label in CrushProfile.VERIFICATION_STATUS_CHOICES
+        if value in UNVERIFIED_STATUS_FILTERS
+    ]
+
+    if status_filter != "all":
+        profiles = profiles.filter(verification_status=status_filter)
+    profiles = _apply_unverified_signal_filter(profiles, signal_filter)
+
+    if sort_mode == "name":
+        # Same reason as the search above: order by what `display_name` is
+        # built from. Sorting the property in Python would only order the
+        # current page, which is worse than an approximate but stable order.
+        profiles = profiles.order_by("user__first_name", "user__last_name", "id")
+    elif sort_mode == "waiting":
+        profiles = profiles.order_by("updated_at", "id")
+    else:
+        profiles = profiles.order_by("-updated_at", "-id")
+
+    paginator = Paginator(profiles, 25)
+    page_obj = paginator.get_page(request.GET.get("page"))
+    page_profiles = list(page_obj.object_list)
+    _annotate_unverified_page(page_profiles, now)
+
+    # Every filter except `page`, so the pager can carry the current view.
+    querystring = request.GET.copy()
+    querystring.pop("page", None)
+
+    context = {
+        "coach": coach,
+        "page_obj": page_obj,
+        "profiles": page_profiles,
+        "total_count": paginator.count,
+        "status_filter": status_filter,
+        "status_chips": status_chips,
+        "signal_filter": signal_filter,
+        "signal_chips": [
+            {"value": "attended", "label": _("Attended but unverified")},
+            {"value": "upcoming", "label": _("Booked on an event")},
+            {"value": "no_photo", "label": _("No photo")},
+            {"value": "luxid", "label": _("LuxID linked")},
+            {"value": "premium", "label": _("Premium")},
+            {"value": "unowned", "label": _("No coach owns it")},
+        ],
+        "sort_mode": sort_mode,
+        "sort_choices": UNVERIFIED_SORT_CHOICES,
+        "query": query,
+        "has_filters": bool(query or signal_filter or status_filter != "all"),
+        "querystring": querystring.urlencode(),
+    }
+    return render(request, "crush_lu/coach_unverified_profiles.html", context)
 
 
 @coach_required
@@ -3336,6 +3614,162 @@ def coach_member_overview(request, user_id):
         "crush_sparks": crush_sparks,
     }
     return render(request, "crush_lu/coach_member_overview.html", context)
+
+
+@coach_required
+@require_http_methods(["POST"])
+def coach_verify_member(request, user_id):
+    """Verify a member from their overview page, outside any event.
+
+    The gap this closes: `coach_review_profile` needs a `ProfileSubmission`
+    owned by the acting coach, and `coach_mark_verified` needs an
+    `EventRegistration` on the event being run. A member who submitted after
+    the verification pivot (no submission row at all) and is not booked on an
+    event could therefore not be verified by any coach through the coach
+    panel — only through Django admin.
+
+    Records ``admin`` — "Verified by Crush.lu" — and deliberately NOT
+    ``coach_event``: `CrushProfile.has_attended_event` and
+    `services.crush_connect.filter_connect_identity_verified` read
+    ``coach_event``/``premium_coach`` as proof that somebody stood in front of
+    a coach at a door, and this action carries no such proof.
+    """
+    from django.contrib.auth.models import User
+
+    coach = request.coach
+    now = timezone.now()
+    member = get_object_or_404(User, id=user_id)
+
+    # A deliberate second step, not a decorated form: this is the one
+    # verification path with no QR scan and no screening call behind it, so
+    # the coach has to say they checked rather than land on it by a stray POST.
+    if request.POST.get("confirm") != "yes":
+        messages.error(
+            request,
+            _("Confirm you have checked this member's identity before verifying."),
+        )
+        return redirect("crush_lu:coach_member_overview", user_id=user_id)
+
+    try:
+        profile = member.crushprofile
+    except CrushProfile.DoesNotExist:
+        messages.error(request, _("This member has no profile to verify."))
+        return redirect("crush_lu:coach_member_overview", user_id=user_id)
+
+    # Same entitlement gate as the door's Verify button, and for the same
+    # reason: `assigned_coach` is granted free on first attendance, so keying
+    # off the FK would make an ordinary member "premium" and lock every other
+    # coach out of verifying them.
+    if profile.has_active_premium and profile.assigned_coach_id not in (None, coach.id):
+        messages.error(
+            request, _("This premium member is verified by their own coach.")
+        )
+        return redirect("crush_lu:coach_member_overview", user_id=user_id)
+
+    reason = (request.POST.get("reason") or "").strip()[:500]
+
+    with transaction.atomic():
+        claimed = claim_profile_verification(
+            profile,
+            method="admin",
+            approved_at=now,
+            claim_from=("incomplete", "pending", "rejected"),
+        )
+        if not claimed:
+            profile.refresh_from_db()
+            if profile.verification_status == "verified":
+                messages.info(request, _("This member is already verified."))
+            else:
+                messages.error(
+                    request, _("Could not verify this profile. Please try again.")
+                )
+            return redirect("crush_lu:coach_member_overview", user_id=user_id)
+
+        _record_panel_verification(profile, coach, now, reason)
+
+    logger.info(
+        "Coach %s verified user %s from the coach panel (method=admin)",
+        coach.pk,
+        member.pk,
+    )
+
+    # Referral credit + welcome email, shared with the door so a member
+    # verified here is not silently denied the reward and the welcome mail
+    # every other verification path sends.
+    _run_post_verification_side_effects(member, profile, request, f"panel:{member.pk}")
+
+    messages.success(
+        request,
+        _("%(name)s is now verified.") % {"name": profile.display_name or member.email},
+    )
+    return redirect("crush_lu:coach_member_overview", user_id=user_id)
+
+
+def _record_panel_verification(profile, coach, now, reason):
+    """Leave a durable, coach-attributed record of a panel verification.
+
+    Not `views_checkin._apply_verification`, and the difference is the point:
+    that helper only ever *updates* a submission, because at a door there is
+    always a registration to hang the decision on. Here the common case is a
+    member with no submission at all, or one the pivot cleanup expired — and a
+    verification whose only trace is a log line is not auditable. So an open
+    submission is closed in place where one exists, and a terminal approved row
+    is written where none does. Either way the decision lands in
+    `coach_verification_history` under the coach who made it.
+    """
+    note = _panel_verification_note(coach, reason)
+
+    # `latest_for_profile` returns None when the newest row is expired: that
+    # story is closed and must not be reopened, so those profiles take the
+    # create branch and get a fresh terminal row instead.
+    submission = ProfileSubmission.latest_for_profile(profile)
+    if submission is not None and submission.status in ("pending", "rejected"):
+        reopened = submission.status == "rejected"
+        submission.status = "approved"
+        submission.reviewed_at = now
+        submission.review_call_completed = True
+        if not submission.coach_id:
+            submission.coach = coach
+        entry = f"{note} (rejection overturned)" if reopened else note
+        submission.coach_notes = (
+            (submission.coach_notes + "\n" if submission.coach_notes else "") + entry
+        ).strip()
+        submission.save(
+            update_fields=[
+                "status",
+                "reviewed_at",
+                "coach_notes",
+                "review_call_completed",
+                "coach",
+            ]
+        )
+        return submission
+
+    if submission is not None and submission.status == "approved":
+        # Already-approved latest alongside an unverified profile is a split
+        # state the claim above just repaired. A second approved row would add
+        # noise, not audit.
+        return submission
+
+    return ProfileSubmission.objects.create(
+        profile=profile,
+        coach=coach,
+        status="approved",
+        reviewed_at=now,
+        review_call_completed=True,
+        coach_notes=note,
+    )
+
+
+def _panel_verification_note(coach, reason):
+    """The audit line written onto the submission for a panel verification."""
+    coach_name = (
+        f"{coach.user.first_name} {coach.user.last_name}".strip() or coach.user.username
+    )
+    note = f"Verified from the coach panel by {coach_name}"
+    if reason:
+        note = f"{note}: {reason}"
+    return note
 
 
 def _verified_profiles_by_user(user_ids):

@@ -163,6 +163,8 @@ from .views_coach import (  # noqa: F401
     coach_event_list,
     coach_event_detail,
     coach_member_overview,
+    coach_verify_member,
+    coach_unverified_profiles,
     coach_reassign_submission,
     coach_verification_history,
     coach_connections,
