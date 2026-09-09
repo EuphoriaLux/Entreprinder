@@ -650,6 +650,74 @@ class CoachVerifyMemberTests(CoachUnverifiedBase):
         self.assertEqual(profile.verification_status, "pending")
         side.assert_not_called()
 
+    def test_coach_cannot_verify_their_own_profile(self):
+        """Same rule the door enforces in `_attest_and_record_photo`.
+
+        A coach who is also a member sees their own unverified profile on the
+        team-wide list, one "Open profile" click from the form — so this needs
+        no guessed URL.
+        """
+        own = self.CrushProfile.objects.create(
+            user=self.coach_user,
+            show_full_name=False,
+            gender="M",
+            location="Luxembourg",
+            verification_status="pending",
+            photo_1="users/1/photos/a.jpg",
+        )
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects") as side:
+            self._post(own)
+
+        own.refresh_from_db()
+        self.assertEqual(own.verification_status, "pending")
+        side.assert_not_called()
+
+    def test_member_without_a_photo_cannot_be_verified(self):
+        """The coach signs "their photo matches" — impossible with no photo."""
+        profile = self._profile("nophoto@example.com", photo=False)
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects") as side:
+            self._post(profile)
+
+        profile.refresh_from_db()
+        self.assertEqual(profile.verification_status, "pending")
+        side.assert_not_called()
+
+    def test_already_approved_row_records_the_repair_without_rewriting_it(self):
+        """A verified/approved split is repaired, not overwritten.
+
+        The earlier approval really happened, so its coach and `reviewed_at`
+        stay put; the repair is appended so the form's promise that the note
+        reaches the review record still holds.
+        """
+        from crush_lu.models import ProfileSubmission
+
+        profile = self._profile("split@example.com")
+        reviewed_at = timezone.now() - timedelta(days=3)
+        submission = ProfileSubmission.objects.create(
+            profile=profile,
+            status="approved",
+            coach=self.other_coach,
+            reviewed_at=reviewed_at,
+        )
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects"):
+            self._post(profile, reason="Split state repair")
+
+        profile.refresh_from_db()
+        self.assertEqual(profile.verification_status, "verified")
+        self.assertEqual(ProfileSubmission.objects.filter(profile=profile).count(), 1)
+
+        submission.refresh_from_db()
+        self.assertEqual(submission.coach_id, self.other_coach.id)
+        self.assertEqual(submission.reviewed_at, reviewed_at)
+        self.assertIn("Split state repair", submission.coach_notes)
+        self.assertIn("original approval record is unchanged", submission.coach_notes)
+
     def test_non_coach_cannot_verify(self):
         profile = self._profile("target@example.com")
         self.client.force_login(self._user("nosy@example.com"))

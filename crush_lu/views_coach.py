@@ -3703,6 +3703,19 @@ def coach_verify_member(request, user_id):
     # id: a stale link or a hand-made POST would otherwise verify a banned or
     # deactivated account — and then pay its referrer and mail it a welcome.
     # A ban leaves the profile row in place, so it has to be checked here too.
+    # Same rule the door enforces in `_attest_and_record_photo`: a coach who
+    # is also a member must not verify themselves. This surface makes it
+    # easier, not harder — the team-wide list shows the coach their own
+    # unverified profile with an "Open profile" link straight to the form.
+    if member.pk == coach.user_id:
+        logger.warning(
+            "[PANEL-VERIFY] Refused self-verification: coach %s targeted their "
+            "own profile",
+            coach.pk,
+        )
+        messages.error(request, _("You cannot verify your own profile."))
+        return redirect("crush_lu:coach_member_overview", user_id=user_id)
+
     if not member.is_active or not profile.is_active:
         messages.error(request, _("This member's account is not active."))
         return redirect("crush_lu:coach_member_overview", user_id=user_id)
@@ -3717,6 +3730,18 @@ def coach_verify_member(request, user_id):
         return redirect("crush_lu:coach_member_overview", user_id=user_id)
     if consent.crushlu_banned:
         messages.error(request, _("This member is banned from Crush.lu."))
+        return redirect("crush_lu:coach_member_overview", user_id=user_id)
+
+    # The coach signs "their photo matches", which is not a statement anyone
+    # can make about a profile with no photo — and the page surfaces exactly
+    # these under the "No photo" signal, so the form is one click away. A
+    # coach who did meet them in person has the door path, which carries a
+    # scan instead of a checkbox.
+    if not profile.photo_1:
+        messages.error(
+            request,
+            _("This member has no photo yet, so it cannot be checked here."),
+        )
         return redirect("crush_lu:coach_member_overview", user_id=user_id)
 
     # Same entitlement gate as the door's Verify button, and for the same
@@ -3841,8 +3866,18 @@ def _record_panel_verification(profile, coach, now, reason):
 
     if submission is not None and submission.status == "approved":
         # Already-approved latest alongside an unverified profile is a split
-        # state the claim above just repaired. A second approved row would add
-        # noise, not audit.
+        # state the claim above just repaired. The earlier approval genuinely
+        # happened, so its coach and `reviewed_at` stay put — overwriting them
+        # would falsify a decision somebody else made at another time, and a
+        # second approved row would add noise rather than audit. The repair is
+        # appended instead, so the form's promise that the note reaches the
+        # review record holds here too.
+        submission.coach_notes = (
+            (submission.coach_notes + "\n" if submission.coach_notes else "")
+            + f"{note} (repaired a verified/approved split; "
+            "the original approval record is unchanged)"
+        ).strip()
+        submission.save(update_fields=["coach_notes"])
         return submission
 
     return ProfileSubmission.objects.create(

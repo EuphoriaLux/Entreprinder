@@ -41361,3 +41361,12 @@ msgstr "Dieses Mitglied ist von Crush.lu gesperrt."
 #: views_coach.py
 msgid "This member has not consented to Crush.lu."
 msgstr "Dieses Mitglied hat Crush.lu nicht zugestimmt."
+
+#: views_coach.py
+msgid "You cannot verify your own profile."
+msgstr "Sie können Ihr eigenes Profil nicht verifizieren."
+
+#: views_coach.py
+msgid "This member has no photo yet, so it cannot be checked here."
+msgstr ""
+"Dieses Mitglied hat noch kein Foto, daher kann es hier nicht geprüft werden."

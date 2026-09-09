@@ -28107,3 +28107,11 @@ msgstr ""
 #: views_coach.py
 msgid "This member has not consented to Crush.lu."
 msgstr ""
+
+#: views_coach.py
+msgid "You cannot verify your own profile."
+msgstr ""
+
+#: views_coach.py
+msgid "This member has no photo yet, so it cannot be checked here."
+msgstr ""
