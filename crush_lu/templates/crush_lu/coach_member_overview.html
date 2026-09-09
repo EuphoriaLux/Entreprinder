@@ -261,6 +261,11 @@
                     <form method="post" action="{% url 'crush_lu:coach_verify_member' member.id %}"
                           x-show="isModalOpen" x-cloak class="mt-4 space-y-3">
                         {% csrf_token %}
+                        {% comment %}The exact photo this page rendered. The
+                        endpoint refuses the attestation if the member has
+                        replaced it since, so the coach cannot vouch for an
+                        image that is no longer on the profile.{% endcomment %}
+                        <input type="hidden" name="photo_key" value="{{ profile.photo_1.name }}">
                         <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-200">
                             <input type="checkbox" name="confirm" value="yes" required
                                    class="mt-0.5 rounded border-gray-300 dark:border-gray-600 text-crush-purple focus:ring-crush-purple">

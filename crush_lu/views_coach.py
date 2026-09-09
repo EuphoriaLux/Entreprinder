@@ -3743,10 +3743,27 @@ def coach_verify_member(request, user_id):
     # these under the "No photo" signal, so the form is one click away. A
     # coach who did meet them in person has the door path, which carries a
     # scan instead of a checkbox.
-    if not profile.photo_1:
+    current_photo_key = getattr(profile.photo_1, "name", "") or ""
+    if not current_photo_key:
         messages.error(
             request,
             _("This member has no photo yet, so it cannot be checked here."),
+        )
+        return redirect("crush_lu:coach_member_overview", user_id=user_id)
+
+    # The coach signs for the photo they were looking at, and a member can
+    # replace `photo_1` between the page rendering and the form landing. The
+    # form carries the key it rendered; a mismatch means the attestation is
+    # about an image that is no longer there. Same reasoning as
+    # `CrushProfile.mark_current_photo_verified`, which pins the key inside its
+    # own UPDATE so "a photo replaced between the read and this write cannot
+    # accidentally inherit the badge". The residual gap here is the
+    # milliseconds between this check and the claim, not the minutes the coach
+    # spends on the page — which is the window that actually matters.
+    if (request.POST.get("photo_key") or "") != current_photo_key:
+        messages.error(
+            request,
+            _("This member's photo changed. Reload and check the new one."),
         )
         return redirect("crush_lu:coach_member_overview", user_id=user_id)
 
@@ -3846,7 +3863,12 @@ def _record_panel_verification(profile, coach, now, reason):
         reopened = submission.status == "rejected"
         submission.status = "approved"
         submission.reviewed_at = now
-        submission.review_call_completed = True
+        # `review_call_completed` is deliberately left alone. This path
+        # requires no screening call — unlike `coach_review_profile`, which
+        # refuses to approve without one — so setting it would invent a call
+        # that never happened: the member overview would show "Call Completed"
+        # and `business_plan_metrics` would count the row in
+        # `calls_with_review`. An existing True is a real call and survives.
         # The acting coach owns this decision — unlike the door's
         # `_apply_verification`, which only fills an empty coach because the
         # scan records attendance rather than a review. This helper exists to
@@ -3865,7 +3887,6 @@ def _record_panel_verification(profile, coach, now, reason):
                 "status",
                 "reviewed_at",
                 "coach_notes",
-                "review_call_completed",
                 "coach",
                 "system_actions",
             ]
@@ -3885,15 +3906,20 @@ def _record_panel_verification(profile, coach, now, reason):
             + f"{note} (repaired a verified/approved split; "
             "the original approval record is unchanged)"
         ).strip()
-        submission.save(update_fields=["coach_notes"])
+        # A slot booked against this submission is just as obsolete here as on
+        # the closable branch — the member ends up verified either way.
+        _release_booked_screening_slots(submission, coach)
+        submission.save(update_fields=["coach_notes", "system_actions"])
         return submission
 
+    # `review_call_completed` left at its default for the same reason: no
+    # screening call happens on this path, and claiming one corrupts both the
+    # member's record and the coach-operations metrics.
     return ProfileSubmission.objects.create(
         profile=profile,
         coach=coach,
         status="approved",
         reviewed_at=now,
-        review_call_completed=True,
         coach_notes=note,
     )
 

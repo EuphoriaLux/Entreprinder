@@ -28115,3 +28115,7 @@ msgstr ""
 #: views_coach.py
 msgid "This member has no photo yet, so it cannot be checked here."
 msgstr ""
+
+#: views_coach.py
+msgid "This member's photo changed. Reload and check the new one."
+msgstr ""

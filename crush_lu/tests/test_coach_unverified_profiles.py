@@ -486,7 +486,12 @@ class CoachVerifyMemberTests(CoachUnverifiedBase):
         )
 
     def _post(self, profile, **extra):
-        data = {"confirm": "yes"}
+        # The form carries the key of the photo it rendered; the endpoint
+        # refuses the attestation if the member has replaced it since.
+        data = {
+            "confirm": "yes",
+            "photo_key": getattr(profile.photo_1, "name", "") or "",
+        }
         data.update(extra)
         return self.client.post(self._url(profile), data)
 
@@ -531,8 +536,10 @@ class CoachVerifyMemberTests(CoachUnverifiedBase):
         self.assertEqual(ProfileSubmission.objects.filter(profile=profile).count(), 1)
         submission.refresh_from_db()
         self.assertEqual(submission.status, "approved")
-        self.assertTrue(submission.review_call_completed)
         self.assertEqual(submission.coach_id, self.coach.id)
+        # Not `review_call_completed`: no screening call happens on this path.
+        # See `test_no_screening_call_is_recorded`.
+        self.assertFalse(submission.review_call_completed)
 
     def test_expired_latest_row_is_not_reopened(self):
         """The expired story stays closed; a fresh terminal row records this."""
@@ -825,6 +832,92 @@ class CoachVerifyMemberTests(CoachUnverifiedBase):
             )
         )
 
+    def test_verification_is_refused_when_the_photo_changed(self):
+        """The coach signs for the image they were looking at.
+
+        A member can replace `photo_1` between the page rendering and the form
+        landing; without the key the endpoint would only see "some photo
+        exists" and attest an image nobody inspected.
+        """
+        profile = self._profile("swapped@example.com")
+        stale_key = profile.photo_1.name
+        profile.photo_1 = "users/1/photos/replaced.jpg"
+        profile.save(update_fields=["photo_1"])
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects") as side:
+            self.client.post(
+                self._url(profile), {"confirm": "yes", "photo_key": stale_key}
+            )
+
+        profile.refresh_from_db()
+        self.assertEqual(profile.verification_status, "pending")
+        side.assert_not_called()
+
+    def test_no_screening_call_is_recorded(self):
+        """This path requires no call, so claiming one corrupts the record.
+
+        `business_plan_metrics` counts `review_call_completed=True` rows in
+        `calls_with_review`, and the member overview renders "Call Completed".
+        """
+        from crush_lu.models import ProfileSubmission
+
+        open_sub_profile = self._profile("nocall@example.com")
+        submission = ProfileSubmission.objects.create(
+            profile=open_sub_profile, status="pending"
+        )
+        no_sub_profile = self._profile("nocall2@example.com")
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects"):
+            self._post(open_sub_profile)
+            self._post(no_sub_profile)
+
+        submission.refresh_from_db()
+        self.assertFalse(submission.review_call_completed)
+        created = ProfileSubmission.objects.get(profile=no_sub_profile)
+        self.assertFalse(created.review_call_completed)
+
+    def test_a_real_completed_call_is_preserved(self):
+        from crush_lu.models import ProfileSubmission
+
+        profile = self._profile("hadcall@example.com")
+        submission = ProfileSubmission.objects.create(
+            profile=profile, status="pending", review_call_completed=True
+        )
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects"):
+            self._post(profile)
+
+        submission.refresh_from_db()
+        self.assertTrue(submission.review_call_completed)
+
+    def test_approved_split_state_also_releases_booked_slots(self):
+        """The member ends up verified on this branch too, so the appointment
+        is just as obsolete as on the closable one."""
+        from crush_lu.models import ProfileSubmission, ScreeningSlot
+
+        profile = self._profile("splitslot@example.com")
+        submission = ProfileSubmission.objects.create(
+            profile=profile, status="approved", coach=self.other_coach
+        )
+        start_at = timezone.now() + timedelta(days=1)
+        slot = ScreeningSlot.objects.create(
+            coach=self.other_coach,
+            submission=submission,
+            status="booked",
+            start_at=start_at,
+            end_at=start_at + timedelta(minutes=30),
+        )
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects"):
+            self._post(profile)
+
+        slot.refresh_from_db()
+        self.assertEqual(slot.status, "cancelled")
+
     def test_non_coach_cannot_verify(self):
         profile = self._profile("target@example.com")
         self.client.force_login(self._user("nosy@example.com"))
@@ -866,7 +959,7 @@ class CoachUnverifiedHostRoutingTests(CoachUnverifiedBase):
         with patch("crush_lu.views_coach._run_post_verification_side_effects"):
             resp = self.client.post(
                 f"/en/coach/member/{profile.user_id}/verify/",
-                {"confirm": "yes"},
+                {"confirm": "yes", "photo_key": profile.photo_1.name},
                 HTTP_HOST="crush.lu",
             )
 

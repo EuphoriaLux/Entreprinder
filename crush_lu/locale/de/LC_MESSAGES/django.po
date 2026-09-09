@@ -41370,3 +41370,9 @@ msgstr "Sie können Ihr eigenes Profil nicht verifizieren."
 msgid "This member has no photo yet, so it cannot be checked here."
 msgstr ""
 "Dieses Mitglied hat noch kein Foto, daher kann es hier nicht geprüft werden."
+
+#: views_coach.py
+msgid "This member's photo changed. Reload and check the new one."
+msgstr ""
+"Das Foto dieses Mitglieds hat sich geändert. Laden Sie neu und prüfen Sie "
+"das neue Foto."
