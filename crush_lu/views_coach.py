@@ -1090,7 +1090,11 @@ def _live_or_future_event_ids(now):
     return [
         event_id
         for event_id, date_time, duration in MeetupEvent.objects.filter(
-            date_time__gte=MeetupEvent.live_lookback_cutoff(now)
+            date_time__gte=MeetupEvent.live_lookback_cutoff(now),
+            # Cancelling an event flips this flag and leaves its registrations
+            # alone, so filtering on time only kept sending coaches to a door
+            # that is not happening.
+            is_cancelled=False,
         ).values_list("id", "date_time", "duration_minutes")
         if date_time + timedelta(minutes=duration) >= now
     ]
@@ -1128,15 +1132,17 @@ def _unverified_signal_annotations(now, live_or_future_event_ids):
                 user_id=OuterRef("user_id"), status="active"
             )
         ),
-        # A coach, not merely an open row: `coach=NULL` is the Verification
-        # Channel's unclaimed state, and those are exactly the profiles the
-        # "No coach owns it" filter exists to surface. Keying on the row alone
-        # made the badge contradict its own label.
+        # An ACTIVE coach, not merely an open row. `coach=NULL` is the
+        # Verification Channel's unclaimed state, and a deactivated coach is
+        # turned away by `coach_required` from every coach view — so neither
+        # can act on the submission, and both are exactly what the "No coach
+        # owns it" filter exists to surface.
         "sig_owned": Exists(
             ProfileSubmission.objects.filter(
                 profile_id=OuterRef("pk"),
                 status__in=ProfileSubmission.ACTIVE_REVIEW_STATUSES,
                 coach__isnull=False,
+                coach__is_active=True,
             )
         ),
     }
@@ -3853,6 +3859,7 @@ def _record_panel_verification(profile, coach, now, reason):
         submission.coach_notes = (
             (submission.coach_notes + "\n" if submission.coach_notes else "") + entry
         ).strip()
+        _release_booked_screening_slots(submission, coach)
         submission.save(
             update_fields=[
                 "status",
@@ -3860,6 +3867,7 @@ def _record_panel_verification(profile, coach, now, reason):
                 "coach_notes",
                 "review_call_completed",
                 "coach",
+                "system_actions",
             ]
         )
         return submission
@@ -3888,6 +3896,35 @@ def _record_panel_verification(profile, coach, now, reason):
         review_call_completed=True,
         coach_notes=note,
     )
+
+
+def _release_booked_screening_slots(submission, coach):
+    """Cancel future booked screening calls for a submission being closed.
+
+    `coach_action_queue` lists every future `booked` slot for a coach without
+    looking at its submission's status, so a slot left booked keeps showing
+    the original coach a screening call for somebody who is already verified —
+    and holds an appointment nobody will attend. Mirrors
+    `views_booking.cancel_booking`, which is the only other place a slot is
+    released, down to stamping `cancelled_reason` and the audit entry.
+
+    Does not save the submission: the caller batches `system_actions` into its
+    own `update_fields`.
+    """
+    slots = list(
+        submission.booked_slots.filter(status="booked", start_at__gte=timezone.now())
+    )
+    for slot in slots:
+        slot.status = "cancelled"
+        slot.cancelled_reason = "verified_by_coach"
+        slot.save(update_fields=["status", "cancelled_reason", "updated_at"])
+        submission.log_system_action(
+            "booking_cancelled",
+            actor=f"coach:{coach.pk}",
+            slot_id=slot.id,
+            reason="verified_from_coach_panel",
+        )
+    return slots
 
 
 def _panel_verification_note(coach, reason):

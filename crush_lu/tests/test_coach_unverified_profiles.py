@@ -409,6 +409,66 @@ class CoachUnverifiedProfilesListTests(CoachUnverifiedBase):
 
         self.assertEqual(self._names(resp), {"Unclaimed", "NoSub"})
 
+    def test_upcoming_signal_excludes_cancelled_events(self):
+        """Cancelling an event leaves its registrations alone.
+
+        Filtering on start time only sent coaches to a door that is not
+        happening.
+        """
+        from crush_lu.models import EventRegistration, MeetupEvent
+
+        cancelled = MeetupEvent.objects.create(
+            title="Called Off",
+            description="event",
+            event_type="speed_dating",
+            date_time=timezone.now() + timedelta(days=3),
+            location="Luxembourg",
+            address="1 Test St",
+            max_participants=20,
+            min_age=18,
+            max_age=99,
+            registration_deadline=timezone.now() + timedelta(days=2),
+            registration_fee=0,
+            is_published=True,
+            is_cancelled=True,
+        )
+        stranded = self._profile("called@example.com", name="Stranded")
+        EventRegistration.objects.create(
+            event=cancelled, user=stranded.user, status="confirmed"
+        )
+        booked = self._profile("real@example.com", name="Booked")
+        EventRegistration.objects.create(
+            event=self.event, user=booked.user, status="confirmed"
+        )
+
+        self.client.force_login(self.coach_user)
+        resp = self.client.get(self._list_url(), {"signal": "upcoming"})
+
+        self.assertEqual(self._names(resp), {"Booked"})
+
+    def test_submission_assigned_to_a_deactivated_coach_counts_as_unowned(self):
+        """`coach_required` turns a deactivated coach away from every coach
+        view, so nobody can act on their submissions."""
+        from crush_lu.models import CrushCoach, ProfileSubmission
+
+        gone_user = self._user("gonecoach@example.com", first_name="Gone")
+        gone_coach = CrushCoach.objects.create(user=gone_user, is_active=False)
+
+        orphaned = self._profile("orphaned@example.com", name="Orphaned")
+        ProfileSubmission.objects.create(
+            profile=orphaned, status="pending", coach=gone_coach
+        )
+        held = self._profile("held@example.com", name="Held")
+        ProfileSubmission.objects.create(
+            profile=held, status="pending", coach=self.other_coach
+        )
+
+        self.client.force_login(self.coach_user)
+        resp = self.client.get(self._list_url(), {"signal": "unowned"})
+
+        self.assertIn("Orphaned", self._names(resp))
+        self.assertNotIn("Held", self._names(resp))
+
     def test_non_coach_is_redirected(self):
         member = self._user("member@example.com")
         self.client.force_login(member)
@@ -717,6 +777,53 @@ class CoachVerifyMemberTests(CoachUnverifiedBase):
         self.assertEqual(submission.reviewed_at, reviewed_at)
         self.assertIn("Split state repair", submission.coach_notes)
         self.assertIn("original approval record is unchanged", submission.coach_notes)
+
+    def test_future_booked_screening_slot_is_released(self):
+        """`coach_action_queue` lists future booked slots regardless of the
+        submission's status, so one left booked keeps showing the original
+        coach a call for an already-verified member."""
+        from crush_lu.models import ProfileSubmission, ScreeningSlot
+
+        profile = self._profile("slot@example.com")
+        submission = ProfileSubmission.objects.create(
+            profile=profile, status="pending", coach=self.other_coach
+        )
+        start_at = timezone.now() + timedelta(days=1)
+        slot = ScreeningSlot.objects.create(
+            coach=self.other_coach,
+            submission=submission,
+            status="booked",
+            start_at=start_at,
+            end_at=start_at + timedelta(minutes=30),
+        )
+        past_start = timezone.now() - timedelta(days=1)
+        past_slot = ScreeningSlot.objects.create(
+            coach=self.other_coach,
+            submission=submission,
+            status="booked",
+            start_at=past_start,
+            end_at=past_start + timedelta(minutes=30),
+        )
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects"):
+            self._post(profile)
+
+        slot.refresh_from_db()
+        self.assertEqual(slot.status, "cancelled")
+        self.assertEqual(slot.cancelled_reason, "verified_by_coach")
+
+        # A slot in the past is history, not an appointment to release.
+        past_slot.refresh_from_db()
+        self.assertEqual(past_slot.status, "booked")
+
+        submission.refresh_from_db()
+        self.assertTrue(
+            any(
+                a.get("type") == "booking_cancelled"
+                for a in (submission.system_actions or [])
+            )
+        )
 
     def test_non_coach_cannot_verify(self):
         profile = self._profile("target@example.com")
