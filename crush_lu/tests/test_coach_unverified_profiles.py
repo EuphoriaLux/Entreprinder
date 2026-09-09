@@ -300,6 +300,63 @@ class CoachUnverifiedProfilesListTests(CoachUnverifiedBase):
         self.assertContains(resp, "Unverifizierte Profile")
         self.assertContains(resp, "1 Profil wartet")
 
+    def test_excludes_profiles_without_crushlu_consent(self):
+        """`create_crush_profile_on_login` makes a profile before consent.
+
+        Somebody who abandoned the consent screen never agreed to the Crush.lu
+        profile layer, so their name and email must not appear on a team-wide
+        coach page.
+        """
+        no_consent = self._profile("nocons@example.com", name="NoConsent")
+        self.UserDataConsent.objects.filter(user=no_consent.user).update(
+            crushlu_consent_given=False
+        )
+        self._profile("consented@example.com", name="Consented")
+
+        self.client.force_login(self.coach_user)
+        resp = self.client.get(self._list_url())
+
+        self.assertEqual(self._names(resp), {"Consented"})
+
+    def test_upcoming_signal_excludes_an_event_that_already_ended(self):
+        """The filter and the rendered badge must agree.
+
+        `live_lookback_cutoff` is a 7-day pre-filter, so an event that started
+        two hours ago and ran for one still falls inside it. Matching on it
+        alone put the member under "Booked on an event" while the row rendered
+        no event badge, because the badge applies the precise end-time check.
+        """
+        from crush_lu.models import EventRegistration, MeetupEvent
+
+        ended = MeetupEvent.objects.create(
+            title="Already Over",
+            description="event",
+            event_type="speed_dating",
+            date_time=timezone.now() - timedelta(hours=2),
+            duration_minutes=60,
+            location="Luxembourg",
+            address="1 Test St",
+            max_participants=20,
+            min_age=18,
+            max_age=99,
+            registration_deadline=timezone.now() - timedelta(hours=3),
+            registration_fee=0,
+            is_published=True,
+        )
+        past = self._profile("past@example.com", name="Past")
+        EventRegistration.objects.create(
+            event=ended, user=past.user, status="confirmed"
+        )
+        booked = self._profile("booked@example.com", name="Booked")
+        EventRegistration.objects.create(
+            event=self.event, user=booked.user, status="confirmed"
+        )
+
+        self.client.force_login(self.coach_user)
+        resp = self.client.get(self._list_url(), {"signal": "upcoming"})
+
+        self.assertEqual(self._names(resp), {"Booked"})
+
     def test_non_coach_is_redirected(self):
         member = self._user("member@example.com")
         self.client.force_login(member)
@@ -461,6 +518,67 @@ class CoachVerifyMemberTests(CoachUnverifiedBase):
         self.assertEqual(profile.verification_method, "luxid")
         side.assert_not_called()
 
+    def test_inactive_or_banned_members_cannot_be_verified(self):
+        """The list hides them; this endpoint reloads any user by id.
+
+        Without the guard a stale link or a hand-made POST verifies a
+        deactivated or banned account and then pays its referrer and mails it
+        a welcome. A ban leaves the profile row in place, so `is_active` alone
+        does not cover it.
+        """
+        inactive = self._profile("gone@example.com", is_active=False)
+        banned = self._profile("banned@example.com")
+        self.UserDataConsent.objects.filter(user=banned.user).update(
+            crushlu_banned=True
+        )
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects") as side:
+            self._post(inactive)
+            self._post(banned)
+
+        for profile in (inactive, banned):
+            profile.refresh_from_db()
+            self.assertEqual(profile.verification_status, "pending")
+        side.assert_not_called()
+
+    def test_open_recontact_row_is_closed_and_credited_to_the_acting_coach(self):
+        """`coach_profiles` selects recontact rows and never excludes verified
+        profiles, so an open one keeps the member in the old coach's queue.
+        And `coach_verification_history` filters on `coach=coach`, so leaving
+        the previous owner on the row hides the decision from whoever made it.
+        """
+        from crush_lu.models import ProfileSubmission
+
+        profile = self._profile("recontact@example.com")
+        submission = ProfileSubmission.objects.create(
+            profile=profile, status="recontact_coach", coach=self.other_coach
+        )
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects"):
+            self._post(profile)
+
+        self.assertEqual(ProfileSubmission.objects.filter(profile=profile).count(), 1)
+        submission.refresh_from_db()
+        self.assertEqual(submission.status, "approved")
+        self.assertEqual(submission.coach_id, self.coach.id)
+
+    def test_outlook_contact_is_resynced_after_the_atomic_claim(self):
+        """`claim_profile_verification` is a QuerySet.update() and skips
+        post_save, so the contact would keep serving the old status."""
+        profile = self._profile("outlook@example.com")
+
+        self.client.force_login(self.coach_user)
+        with (
+            patch("crush_lu.views_coach._run_post_verification_side_effects"),
+            patch("crush_lu.signals.sync_profile_to_outlook") as sync,
+        ):
+            self._post(profile)
+
+        sync.assert_called_once()
+        self.assertEqual(sync.call_args.kwargs["instance"].pk, profile.pk)
+
     def test_non_coach_cannot_verify(self):
         profile = self._profile("target@example.com")
         self.client.force_login(self._user("nosy@example.com"))
@@ -470,3 +588,42 @@ class CoachVerifyMemberTests(CoachUnverifiedBase):
         self.assertEqual(resp.status_code, 302)
         profile.refresh_from_db()
         self.assertEqual(profile.verification_status, "pending")
+
+
+class CoachUnverifiedHostRoutingTests(CoachUnverifiedBase):
+    """Reach the page the way production does: by Host header.
+
+    Deliberately without the `ROOT_URLCONF` override the other classes use.
+    Those exercise the view; this exercises `DomainURLRoutingMiddleware`
+    swapping `request.urlconf` per host, which is what actually resolves
+    `/coach/unverified/` on crush.lu. `reverse()` cannot stand in for it — it
+    resolves against the default URLconf, where crush_lu is mounted under
+    `/crush/`, so a route that 404s on the real host would still pass.
+
+    The literal path carries `/en/` because every crush_lu route lives inside
+    `i18n_patterns(..., prefix_default_language=True)`.
+    """
+
+    def test_page_resolves_on_the_crush_host(self):
+        self._profile("host@example.com", name="HostRouted")
+
+        self.client.force_login(self.coach_user)
+        resp = self.client.get("/en/coach/unverified/", HTTP_HOST="crush.lu")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("HostRouted", self._names(resp))
+
+    def test_verify_endpoint_resolves_on_the_crush_host(self):
+        profile = self._profile("hostverify@example.com")
+
+        self.client.force_login(self.coach_user)
+        with patch("crush_lu.views_coach._run_post_verification_side_effects"):
+            resp = self.client.post(
+                f"/en/coach/member/{profile.user_id}/verify/",
+                {"confirm": "yes"},
+                HTTP_HOST="crush.lu",
+            )
+
+        self.assertEqual(resp.status_code, 302)
+        profile.refresh_from_db()
+        self.assertEqual(profile.verification_status, "verified")

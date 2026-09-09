@@ -1068,7 +1068,28 @@ UNVERIFIED_SORT_CHOICES = {
 }
 
 
-def _unverified_signal_annotations(now):
+def _live_or_future_event_ids(now):
+    """Events a member can still be verified at: not started yet, or running.
+
+    ``end_time`` is a Python property — ``timedelta * F()`` is unsupported on
+    SQLite — so the precise check cannot live in the query. The bounded
+    `live_lookback_cutoff` pre-filter keeps this to events that started within
+    the duration ceiling plus everything still to come, and materialising
+    their ids is what lets the `upcoming` filter and the rendered badge agree.
+    They disagreed before: the filter admitted an event that had already ended
+    while `_annotate_unverified_page` correctly dropped it, so the row showed
+    up under "Booked on an event" with no event badge explaining why.
+    """
+    return [
+        event_id
+        for event_id, date_time, duration in MeetupEvent.objects.filter(
+            date_time__gte=MeetupEvent.live_lookback_cutoff(now)
+        ).values_list("id", "date_time", "duration_minutes")
+        if date_time + timedelta(minutes=duration) >= now
+    ]
+
+
+def _unverified_signal_annotations(now, live_or_future_event_ids):
     """``Exists`` annotations shared by the filter chips and the row badges.
 
     Annotated unconditionally rather than per selected filter: the template
@@ -1080,13 +1101,14 @@ def _unverified_signal_annotations(now):
 
     return {
         "sig_attended": Exists(seat_held.filter(status="attended")),
-        # `live_lookback_cutoff`, not `now`: an event running right this minute
-        # is still a door the member can be verified at, and this has to agree
-        # with the per-page upcoming list `_annotate_unverified_page` builds.
+        # An event running right this minute is still a door the member can
+        # be verified at; one that has already ended is not. The id list is
+        # the same one `_annotate_unverified_page` renders from, so the filter
+        # and the badge cannot disagree.
         "sig_upcoming": Exists(
-            seat_held.filter(
-                event__date_time__gte=MeetupEvent.live_lookback_cutoff(now),
-            ).exclude(status="cancelled")
+            seat_held.filter(event_id__in=live_or_future_event_ids).exclude(
+                status="cancelled"
+            )
         ),
         # Two providers reach LuxID and only one of them is unambiguous — see
         # `CrushProfile.luxid_account_querysets`. Kept as two annotations OR-ed
@@ -1124,7 +1146,7 @@ def _apply_unverified_signal_filter(profiles, signal):
     return profiles
 
 
-def _annotate_unverified_page(profiles, now):
+def _annotate_unverified_page(profiles, now, live_or_future_event_ids):
     """Attach per-row detail to the rows actually rendered.
 
     Deliberately runs after pagination. The signal booleans are cheap enough
@@ -1140,16 +1162,13 @@ def _annotate_unverified_page(profiles, now):
     for reg in (
         EventRegistration.objects.filter(
             user_id__in=user_ids,
-            event__date_time__gte=MeetupEvent.live_lookback_cutoff(now),
+            event_id__in=live_or_future_event_ids,
         )
         .exclude(status="cancelled")
         .select_related("event")
         .order_by("event__date_time")
     ):
-        # The cutoff is a bounded pre-filter, not the answer: it admits events
-        # that started within the duration ceiling and have since ended.
-        if reg.event.end_time >= now:
-            upcoming_by_user.setdefault(reg.user_id, []).append(reg)
+        upcoming_by_user.setdefault(reg.user_id, []).append(reg)
 
     attended_by_user = {
         row["user_id"]: row["n"]
@@ -1216,12 +1235,23 @@ def coach_unverified_profiles(request):
         "user_id", flat=True
     )
 
+    live_or_future_event_ids = _live_or_future_event_ids(now)
+
     profiles = (
-        CrushProfile.objects.filter(is_active=True, user__is_active=True)
+        CrushProfile.objects.filter(
+            is_active=True,
+            user__is_active=True,
+            # `create_crush_profile_on_login` gives every crush.lu login an
+            # incomplete profile before the consent screen is answered. Without
+            # this, somebody who abandoned that screen — who never agreed to
+            # the Crush.lu profile layer at all — would be listed by name and
+            # email on a team-wide coach page.
+            user__data_consent__crushlu_consent_given=True,
+        )
         .exclude(verification_status="verified")
         .exclude(user_id__in=banned_user_ids)
         .select_related("user", "assigned_coach__user")
-        .annotate(**_unverified_signal_annotations(now))
+        .annotate(**_unverified_signal_annotations(now, live_or_future_event_ids))
     )
 
     if query:
@@ -1269,7 +1299,7 @@ def coach_unverified_profiles(request):
     paginator = Paginator(profiles, 25)
     page_obj = paginator.get_page(request.GET.get("page"))
     page_profiles = list(page_obj.object_list)
-    _annotate_unverified_page(page_profiles, now)
+    _annotate_unverified_page(page_profiles, now, live_or_future_event_ids)
 
     # Every filter except `page`, so the pager can carry the current view.
     querystring = request.GET.copy()
@@ -3656,6 +3686,17 @@ def coach_verify_member(request, user_id):
         messages.error(request, _("This member has no profile to verify."))
         return redirect("crush_lu:coach_member_overview", user_id=user_id)
 
+    # The list already excludes these, but this endpoint reloads any user by
+    # id: a stale link or a hand-made POST would otherwise verify a banned or
+    # deactivated account — and then pay its referrer and mail it a welcome.
+    # A ban leaves the profile row in place, so it has to be checked here too.
+    if not member.is_active or not profile.is_active:
+        messages.error(request, _("This member's account is not active."))
+        return redirect("crush_lu:coach_member_overview", user_id=user_id)
+    if UserDataConsent.objects.filter(user=member, crushlu_banned=True).exists():
+        messages.error(request, _("This member is banned from Crush.lu."))
+        return redirect("crush_lu:coach_member_overview", user_id=user_id)
+
     # Same entitlement gate as the door's Verify button, and for the same
     # reason: `assigned_coach` is granted free on first attendance, so keying
     # off the FK would make an ordinary member "premium" and lock every other
@@ -3693,6 +3734,24 @@ def coach_verify_member(request, user_id):
         member.pk,
     )
 
+    try:
+        # `claim_profile_verification` is a QuerySet.update() and so bypasses
+        # post_save. Same explicit re-run the coach-review approve and the
+        # door-reject paths make, or the shared-mailbox contact keeps serving
+        # the old pending/rejected status until some unrelated save happens.
+        from .signals import sync_profile_to_outlook
+
+        sync_profile_to_outlook(
+            sender=CrushProfile,
+            instance=profile,
+            created=False,
+            update_fields=None,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to sync panel-verified profile %s to Outlook", profile.pk
+        )
+
     # Referral credit + welcome email, shared with the door so a member
     # verified here is not silently denied the reward and the welcome mail
     # every other verification path sends.
@@ -3722,14 +3781,27 @@ def _record_panel_verification(profile, coach, now, reason):
     # `latest_for_profile` returns None when the newest row is expired: that
     # story is closed and must not be reopened, so those profiles take the
     # create branch and get a fresh terminal row instead.
+    #
+    # Every still-open review state closes here, not just "pending": a
+    # `recontact_coach` or `revision` row left open keeps the member in
+    # `coach_profiles`, which selects those statuses directly and does not
+    # exclude verified profiles — so the original coach would go on being
+    # asked to chase somebody who is already verified.
+    closable = ProfileSubmission.ACTIVE_REVIEW_STATUSES + ("rejected",)
     submission = ProfileSubmission.latest_for_profile(profile)
-    if submission is not None and submission.status in ("pending", "rejected"):
+    if submission is not None and submission.status in closable:
         reopened = submission.status == "rejected"
         submission.status = "approved"
         submission.reviewed_at = now
         submission.review_call_completed = True
-        if not submission.coach_id:
-            submission.coach = coach
+        # The acting coach owns this decision — unlike the door's
+        # `_apply_verification`, which only fills an empty coach because the
+        # scan records attendance rather than a review. This helper exists to
+        # put the verification in `coach_verification_history`, and that view
+        # filters on `coach=coach`: leaving the previous owner on the row
+        # credits them with a review they did not do and hides it from the
+        # coach who did it.
+        submission.coach = coach
         entry = f"{note} (rejection overturned)" if reopened else note
         submission.coach_notes = (
             (submission.coach_notes + "\n" if submission.coach_notes else "") + entry

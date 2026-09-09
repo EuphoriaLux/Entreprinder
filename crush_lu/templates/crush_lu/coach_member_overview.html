@@ -240,7 +240,7 @@
         this a coach who finds them here can look but not act.{% endcomment %}
         {% if profile.verification_status != 'verified' %}
             <div class="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
-                <div x-data="{ open: false }">
+                <div x-data="verifyMemberPanel">
                     <div class="flex flex-wrap items-center justify-between gap-3">
                         <div>
                             <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{% trans "Verify this member" %}</h4>
@@ -248,14 +248,18 @@
                                 {% trans "Records a manual verification by Crush.lu. It does not count as in-person attendance." %}
                             </p>
                         </div>
-                        <button type="button" @click="open = !open" class="btn-crush-outline btn-sm">
-                            <span x-show="!open">{% trans "Verify…" %}</span>
-                            <span x-show="open" x-cloak>{% trans "Cancel" %}</span>
+                        {% comment %}Bare method and getter names only: the CSP
+                        Alpine build (alpinejs-csp-3.13.3) evaluates no
+                        expressions, so "open = !open" and "!open" are inert
+                        and the form could never be opened.{% endcomment %}
+                        <button type="button" @click="toggleModal" class="btn-crush-outline btn-sm">
+                            <span x-show="isModalClosed">{% trans "Verify…" %}</span>
+                            <span x-show="isModalOpen" x-cloak>{% trans "Cancel" %}</span>
                         </button>
                     </div>
 
                     <form method="post" action="{% url 'crush_lu:coach_verify_member' member.id %}"
-                          x-show="open" x-cloak class="mt-4 space-y-3">
+                          x-show="isModalOpen" x-cloak class="mt-4 space-y-3">
                         {% csrf_token %}
                         <label class="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-200">
                             <input type="checkbox" name="confirm" value="yes" required

@@ -28095,3 +28095,11 @@ msgid "%(counter)s event attended"
 msgid_plural "%(counter)s events attended"
 msgstr[0] ""
 msgstr[1] ""
+
+#: views_coach.py
+msgid "This member's account is not active."
+msgstr ""
+
+#: views_coach.py
+msgid "This member is banned from Crush.lu."
+msgstr ""
