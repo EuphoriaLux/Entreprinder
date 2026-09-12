@@ -143,8 +143,8 @@ class EchoLuMisconfigured(EchoLuNotSent):
     no event fills for itself) refuses *every* event, so the sweep has to fail
     on it rather than warn about it one event at a time (see
     :func:`is_isolated_failure`). A blank fallback for a field an event *can*
-    fill itself — the picture, say — is a plain :class:`EchoLuNotSent`; the
-    sweep notices when several events are refused for it at once.
+    fill itself — the picture, say — is a plain :class:`EchoLuNotSent`, named
+    per event in the sweep's warning.
     """
 
 
@@ -175,7 +175,9 @@ def _setting_list(name, default=""):
 class EchoLuClient:
     """Thin wrapper over the echo.lu experiences API."""
 
-    def __init__(self, api_key=None, base_url=None, timeout=None, max_retries=None):
+    def __init__(
+        self, api_key=None, base_url=None, timeout=None, max_retries=None, deadline=None
+    ):
         self.api_key = (api_key or getattr(settings, "ECHO_LU_API_KEY", "")).strip()
         base = base_url or getattr(
             settings, "ECHO_LU_API_BASE_URL", "https://api.echo.lu/v1"
@@ -186,6 +188,11 @@ class EchoLuClient:
         # one slow call into a minute of held request, and the hourly sweep is
         # already the retry for anything the fast path drops.
         self.max_retries = MAX_RETRIES if max_retries is None else max_retries
+        # A time.monotonic() value the caller must be finished by, or None.
+        # Only optional follow-up calls read it (see _listing_is_gone): a
+        # caller that reserved time for one request per item must not have a
+        # second, unreserved one tacked on. None means "no time for extras".
+        self.deadline = deadline
 
     def _headers(self):
         if not self.api_key:
@@ -199,7 +206,15 @@ class EchoLuClient:
             "Accept": "application/json",
         }
 
-    def _request(self, method, path, json_body=None, params=None, retry_statuses=None):
+    def _request(
+        self,
+        method,
+        path,
+        json_body=None,
+        params=None,
+        retry_statuses=None,
+        timeout=None,
+    ):
         """Send one API call, retrying only transient failures.
 
         Returns the decoded JSON body (or ``{}`` for an empty 204), and raises
@@ -208,7 +223,12 @@ class EchoLuClient:
         ``retry_statuses`` narrows what counts as retryable, and passing a set
         that excludes the 5xx family also switches off transport-level retries
         — see :meth:`create_experience` for why that pairing is the point.
+
+        ``timeout`` overrides the client's for this one call — used to fit an
+        optional follow-up into whatever is left of the caller's budget.
         """
+        if timeout is None:
+            timeout = self.timeout
         if retry_statuses is None:
             retry_statuses = RETRY_STATUSES
         # A dropped socket and a 502 are indistinguishable from here: either
@@ -230,7 +250,7 @@ class EchoLuClient:
                     headers=headers,
                     json=json_body,
                     params=params,
-                    timeout=self.timeout,
+                    timeout=timeout,
                 )
             except requests.RequestException as exc:
                 # A connection error is transient in the same way a 503 is, so
@@ -318,8 +338,17 @@ class EchoLuClient:
     def update_experience(self, experience_id, payload):
         return self._request("PUT", f"/experiences/{experience_id}", json_body=payload)
 
-    def get_experience(self, experience_id):
-        return self._request("GET", f"/experiences/{experience_id}")
+    def get_experience(self, experience_id, timeout=None):
+        if timeout is None:
+            return self._request("GET", f"/experiences/{experience_id}")
+        # A bounded lookup gets exactly one attempt: a retry sleeping past the
+        # caller's deadline would undo the bound it was given.
+        return self._request(
+            "GET",
+            f"/experiences/{experience_id}",
+            retry_statuses=frozenset(),
+            timeout=timeout,
+        )
 
     def list_experiences(self, **params):
         """One page of the organisation's experiences.
@@ -1089,8 +1118,8 @@ def missing_required_fields(payload):
 # EchoLuMisconfigured, not a per-event refusal. `pictures`, `languages` and
 # `categories` are left out on purpose: each is filled from the event first
 # (its image, its languages, its type's category map) and a shared fallback
-# second, so one event lacking its own value is that event's gap. Several at
-# once are caught by the sweep comparing their refusals instead.
+# second, so one event lacking its own value is that event's gap, named in
+# the sweep's per-event warning.
 _SHARED_CONFIG_FIELDS = frozenset({"audiences", "environments", "formats"})
 
 
@@ -1444,9 +1473,23 @@ def _listing_is_gone(client, experience_id):
     Anything inconclusive answers False. Keeping a dead id costs at worst the
     stale id this exists to clear, while clearing a live draft's id makes the
     next republish create a second listing beside it.
+
+    Optional, so it only runs inside the caller's budget. A client without a
+    deadline — the admin's remove action and the save-triggered sync, which
+    reserve time for one call per event inside a web request — or with none
+    left skips the lookup, which counts as inconclusive. Otherwise the GET is
+    cut to whatever time remains, and gets a single attempt.
     """
+    deadline = getattr(client, "deadline", None)
+    if deadline is None:
+        return False
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False
     try:
-        client.get_experience(experience_id)
+        client.get_experience(
+            experience_id, timeout=min(getattr(client, "timeout", remaining), remaining)
+        )
     except EchoLuError as exc:
         return exc.status_code == 404
     return False
@@ -1700,9 +1743,6 @@ def sync_event(event, client=None, force=False, dry_run=False):
                     "empty — that is the one to set, or ECHO_LU_FALLBACK_IMAGE "
                     "to override it just for echo.lu."
                 )
-                # What the sweep compares across events: the same missing
-                # field on several of them is a blank shared fallback.
-                refusal.missing_fields = tuple(missing)
                 raise refusal
 
             outcome = _write_experience(sync, payload, fingerprint, client)

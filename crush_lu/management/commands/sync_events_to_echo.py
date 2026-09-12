@@ -39,10 +39,10 @@ A failure that belongs to one event — echo.lu rejecting its payload, a venue
 nobody has linked, a listing blocked on an untracked create — does not fail
 the run. It is recorded on that event's sync row and named in one WARNING per
 sweep, because it fails identically every hour until a person fixes that
-event, and 500ing the endpoint on it hid every other exception. Several events
-refused with the very same answer do fail it: that is a shared setting, not an
-event. With --event-id or --withdraw any failure is fatal, since those are an
-operator asking for one specific outcome.
+event, and 500ing the endpoint on it hid every other exception. How many
+events share a failure never changes its scope. With --event-id or --withdraw
+any failure is fatal, since those are an operator asking for one specific
+outcome.
 """
 
 import logging
@@ -214,6 +214,11 @@ class Command(BaseCommand):
         deadline = (
             time.monotonic() + budget - 2 * timeout if budget and not dry_run else None
         )
+        if client is not None and budget:
+            # Where the budget really ends, for the one optional follow-up
+            # call (the draft-or-deleted GET): it is cut short or skipped
+            # rather than run past this.
+            client.deadline = time.monotonic() + budget
         deferred = 0
 
         for index, event in enumerate(events):
@@ -290,40 +295,13 @@ class Command(BaseCommand):
             (e, exc) for e, exc in failures if not echo_lu.is_isolated_failure(exc)
         ]
 
-        # A per-event refusal is a verdict on one payload — unless several
-        # events get the very same one, which means a shared cause:
-        #
-        # - a mistyped or retired shared slug (ECHO_LU_DEFAULT_*) is rejected
-        #   by echo.lu rather than caught here, with an identical answer for
-        #   every event that needs a write. Compared on status and body, not
-        #   the message, which leads with each event's own request path.
-        # - a blank fallback for a field an event can also fill itself (the
-        #   picture, languages, categories) refuses every event that lacks
-        #   its own value. One such event is that event's gap; several are
-        #   the setting.
-        #
-        # Warned about one event at a time, either would keep the timer green
-        # while nothing syncs. Other local refusals are never compared: two
-        # events at one unlinked venue share a venue, not a setting.
-        def comparable_answer(exc):
-            if exc.status_code is not None:
-                return (exc.status_code, str(exc.body))
-            missing = getattr(exc, "missing_fields", None)
-            return ("missing", missing) if missing else None
-
-        answers = {}
-        for e, exc in isolated:
-            answer = comparable_answer(exc)
-            if answer is not None:
-                answers.setdefault(answer, set()).add(e.pk)
-        shared = {answer for answer, pks in answers.items() if len(pks) > 1}
-        if shared:
-            systemic += [
-                (e, exc) for e, exc in isolated if comparable_answer(exc) in shared
-            ]
-            isolated = [
-                (e, exc) for e, exc in isolated if comparable_answer(exc) not in shared
-            ]
+        # Scope comes from the kind of failure alone, never from how many
+        # events happened to share it in one run. Counting was tried and is
+        # wrong both ways: a retired shared slug usually reaches only the one
+        # event that needed a write this hour, and two unrelated rejections
+        # can share a generic body. A bad shared slug therefore shows up as a
+        # per-event warning carrying echo.lu's rejection text, and
+        # `echo_taxonomy --check` is the gate that validates those settings.
 
         if isolated or blocked:
             # Named here because nothing else names them: the lines above go

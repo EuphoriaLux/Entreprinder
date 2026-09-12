@@ -134,7 +134,11 @@ class FakeClient:
         self._record("update", experience_id, payload)
         return echo_response({"id": experience_id})
 
-    def get_experience(self, experience_id):
+    # No budget to respect, so the optional draft-or-deleted GET always runs.
+    # The real inline callers leave the client's deadline unset and skip it.
+    deadline = float("inf")
+
+    def get_experience(self, experience_id, timeout=None):
         self._record("get", experience_id)
         return echo_response({"id": experience_id})
 
@@ -180,7 +184,7 @@ class DeletedListingClient(DraftListingClient):
 
     get_status = 404
 
-    def get_experience(self, experience_id):
+    def get_experience(self, experience_id, timeout=None):
         self._record("get", experience_id)
         raise echo_lu.EchoLuError(
             f"echo.lu GET /experiences/{experience_id} rejected",
@@ -1646,6 +1650,61 @@ class SyncEventTests(TestCase):
             EchoExperienceSync.objects.get(event=event).experience_id, "exp-123"
         )
 
+    def test_a_client_without_a_deadline_skips_the_check_and_keeps_the_id(self):
+        # The admin's remove action and the save-triggered sync run inside a
+        # web request with time reserved for one call per event. They build
+        # their clients without a deadline, so the follow-up GET is skipped
+        # rather than tacked on unreserved — and skipping keeps the id, the
+        # side that can never create a second listing.
+        event = make_event()
+        echo_lu.sync_event(event, client=FakeClient())
+
+        MeetupEvent.objects.filter(pk=event.pk).update(is_published=False)
+        event.refresh_from_db()
+        client = DeletedListingClient()
+        client.deadline = None
+        self.assertEqual(echo_lu.sync_event(event, client=client), "withdrawn")
+
+        self.assertEqual(client.calls, [("unpublish", "exp-123")])
+        self.assertEqual(
+            EchoExperienceSync.objects.get(event=event).experience_id, "exp-123"
+        )
+
+    def test_a_spent_deadline_skips_the_check(self):
+        import time
+
+        event = make_event()
+        echo_lu.sync_event(event, client=FakeClient())
+
+        MeetupEvent.objects.filter(pk=event.pk).update(is_published=False)
+        event.refresh_from_db()
+        client = DeletedListingClient()
+        client.deadline = time.monotonic() - 1
+        self.assertEqual(echo_lu.sync_event(event, client=client), "withdrawn")
+
+        self.assertEqual(client.calls, [("unpublish", "exp-123")])
+        self.assertEqual(
+            EchoExperienceSync.objects.get(event=event).experience_id, "exp-123"
+        )
+
+    def test_the_check_fits_in_the_time_left_and_is_never_retried(self):
+        # Clamped to what is left of the caller's budget, and one attempt
+        # only: a retry sleeping past the deadline would undo the clamp.
+        import time
+
+        client = echo_lu.EchoLuClient(
+            timeout=20, max_retries=3, deadline=time.monotonic() + 3
+        )
+        failing = mock.Mock(status_code=503, headers={}, content=b"", text="")
+        failing.json.side_effect = ValueError
+        with mock.patch(
+            "crush_lu.services.echo_lu.requests.request", return_value=failing
+        ) as request:
+            self.assertFalse(echo_lu._listing_is_gone(client, "exp-1"))
+
+        self.assertEqual(request.call_count, 1)
+        self.assertLessEqual(request.call_args.kwargs["timeout"], 3)
+
     def test_cancelling_a_draft_keeps_retrying_the_notice(self):
         # A cancel gets the same answer for a draft: no notice is showing.
         # CANCELLED would tell the sweep one is and leave the event alone for
@@ -2390,15 +2449,15 @@ class SyncCommandTests(TestCase):
                 self._run("--event-id", str(event.pk))
 
     @override_settings(**ENABLED)
-    def test_the_same_rejection_for_several_events_fails_the_sweep(self):
-        # A mistyped or retired shared slug is refused by echo.lu, not caught
-        # locally, and every event needing a write gets the same answer. For
-        # one event that reads as per-event; for several it is the setting,
-        # and the timer has to see it.
-        from django.core.management.base import CommandError
-
-        make_event(title="First")
-        make_event(title="Second")
+    def test_scope_is_never_inferred_from_how_many_events_share_an_answer(self):
+        # Deliberate, and pinned so it is not "fixed" back. Promoting a
+        # rejection because two events got the same one was tried: it misses
+        # the usual case (one event needing a write) and misfires on two
+        # unrelated rejections with a generic body. A bad shared slug is a
+        # per-event warning that carries echo.lu's text; `echo_taxonomy
+        # --check` is the gate that validates the settings themselves.
+        first = make_event(title="First")
+        second = make_event(title="Second")
 
         def fake_sync(event, client=None, force=False, dry_run=False):
             raise echo_lu.EchoLuError(
@@ -2409,26 +2468,15 @@ class SyncCommandTests(TestCase):
 
         with mock.patch.object(
             echo_lu, "sync_event", side_effect=fake_sync
-        ), mock.patch.object(echo_lu, "EchoLuClient"):
-            with self.assertRaises(CommandError):
-                self._run()
-
-    @override_settings(**ENABLED)
-    def test_different_rejections_stay_per_event(self):
-        make_event(title="First")
-        make_event(title="Second")
-
-        def fake_sync(event, client=None, force=False, dry_run=False):
-            raise echo_lu.EchoLuError(
-                "rejected",
-                status_code=422,
-                body={"message": f"invalid address on {event.pk}"},
-            )
-
-        with mock.patch.object(
-            echo_lu, "sync_event", side_effect=fake_sync
-        ), mock.patch.object(echo_lu, "EchoLuClient"):
+        ), mock.patch.object(echo_lu, "EchoLuClient"), self.assertLogs(
+            COMMAND_LOGGER, level="WARNING"
+        ) as logs:
             self._run()  # no CommandError
+
+        logged = "\n".join(logs.output)
+        self.assertIn(f"[{first.pk}]", logged)
+        self.assertIn(f"[{second.pk}]", logged)
+        self.assertIn("unknown category: nightlife", logged)
 
     @override_settings(
         ECHO_LU_FALLBACK_IMAGE="", SOCIAL_PREVIEW_IMAGE_URL="", **ENABLED
@@ -2444,20 +2492,6 @@ class SyncCommandTests(TestCase):
             self._run()
 
         self.assertIn(f"[{event.pk}] not sent", "\n".join(logs.output))
-
-    @override_settings(
-        ECHO_LU_FALLBACK_IMAGE="", SOCIAL_PREVIEW_IMAGE_URL="", **ENABLED
-    )
-    def test_several_events_missing_the_same_field_fail_the_sweep(self):
-        # ...but several events refused for the same missing field is the
-        # blank fallback, and that is shared.
-        from django.core.management.base import CommandError
-
-        make_event(title="First")
-        make_event(title="Second")
-        with mock.patch.object(echo_lu, "EchoLuClient", return_value=FakeClient()):
-            with self.assertRaises(CommandError):
-                self._run()
 
     @override_settings(**ENABLED)
     def test_a_bulk_withdrawal_fails_when_a_listing_stays_up(self):

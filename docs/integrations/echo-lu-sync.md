@@ -364,10 +364,11 @@ command exits non-zero and the endpoint answers 500, so the Function's failure
 count moves. A revoked key or a long outage shows up there instead of staying
 green on a job that quietly synced nothing.
 
-**Per-event failures do not** — unless several events get the very same
-answer in one sweep (the same echo.lu rejection, or the same missing field),
-which means a shared setting and fails the sweep after all. `--event-id` and
-`--withdraw` runs fail on any failure. A 400/422 rejection of one event's
+**Per-event failures do not**, and how many events share one never changes
+that — counting was tried and is wrong both ways. A mistyped or retired
+shared slug in `ECHO_LU_DEFAULT_*` is therefore a per-event warning carrying
+echo.lu's rejection text; `echo_taxonomy --check` is the gate that validates
+those settings. `--event-id` and `--withdraw` runs fail on any failure. A 400/422 rejection of one event's
 payload, an event
 whose venue is not linked, and a listing blocked on an untracked create are
 recorded on that event's sync row (the admin shows them) and named in one
@@ -417,7 +418,10 @@ the sweep and each finished draft retried the same impossible unpublish every
 hour.
 
 Before recording it, the sync asks echo.lu for the listing itself — one `GET`,
-made only on this answer. If the `GET` finds it, it is a draft and the id is
+made only on this answer, and only within the caller's time budget. The
+hourly sweep has budget for it; the admin's remove action and the
+save-triggered sync run inside a web request and skip it, keeping the id —
+the safe side. If the `GET` finds it, it is a draft and the id is
 kept, so re-publishing updates it. If the `GET` 404s too, the listing was
 deleted in the back office: the id is cleared, so re-publishing creates a
 fresh listing instead of updating one that no longer exists forever. (The
