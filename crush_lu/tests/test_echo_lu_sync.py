@@ -1728,7 +1728,10 @@ class SyncEventTests(TestCase):
                 echo_lu._listing_is_gone(client, "exp-1")
 
         self.assertEqual(request.call_count, 1)
-        self.assertLessEqual(request.call_args.kwargs["timeout"], 3)
+        connect, read = request.call_args.kwargs["timeout"]
+        # requests times connecting and reading separately, so it is the two
+        # together that have to fit in the time left.
+        self.assertLessEqual(connect + read, 3)
 
     def test_cancelling_a_draft_keeps_retrying_the_notice(self):
         # A cancel gets the same answer for a draft: no notice is showing.
@@ -2420,6 +2423,34 @@ class SyncCommandTests(TestCase):
         self.assertIn("Good", output)
         self.assertIn("rejected", output)
         self.assertIn(f"[{bad.pk}] rejected", "\n".join(logs.output))
+
+    @override_settings(**ENABLED)
+    def test_the_warning_survives_the_pii_filter(self):
+        # The per-event warning is the only place a stuck event is named, and
+        # production masks any log *argument* containing "@" as one email —
+        # which would collapse the whole warning. Rendered as the message,
+        # only real addresses are masked and the event and reason survive.
+        from azureproject.logging_utils import PIIMaskingFilter
+
+        bad = make_event(title="Bad")
+
+        def fake_sync(event, client=None, force=False, dry_run=False):
+            raise echo_lu.EchoLuError(
+                "rejected: contact love@crush.lu is not verified", status_code=422
+            )
+
+        with mock.patch.object(
+            echo_lu, "sync_event", side_effect=fake_sync
+        ), mock.patch.object(echo_lu, "EchoLuClient"), self.assertLogs(
+            COMMAND_LOGGER, level="WARNING"
+        ) as logs:
+            self._run()
+
+        record = logs.records[-1]
+        PIIMaskingFilter().filter(record)
+        rendered = record.getMessage()
+        self.assertIn(f"[{bad.pk}] rejected: contact", rendered)
+        self.assertNotIn("love@crush.lu", rendered)
 
     @override_settings(**ENABLED)
     def test_a_blocked_event_is_named_without_failing_the_sweep(self):

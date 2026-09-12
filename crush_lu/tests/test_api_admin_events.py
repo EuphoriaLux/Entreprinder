@@ -86,6 +86,33 @@ class _EndpointContract:
         # Logged, never returned.
         self.assertNotIn("Karaoke", resp.content.decode())
 
+    def test_logged_output_survives_the_pii_filter(self):
+        # Production runs every record through PIIMaskingFilter, whose
+        # argument branch masks any string containing "@" as one email. The
+        # output has to be the message itself, so that only real addresses
+        # are masked and the rest of the report survives.
+        from django.core.management import CommandError
+
+        from azureproject.logging_utils import PIIMaskingFilter
+
+        def failing_command(*args, stdout=None, **kwargs):
+            stdout.write(
+                "  ✗ [23] Speed Dating @ Urban Bar: rejected; contact "
+                "love@crush.lu\n"
+            )
+            raise CommandError("1 event(s) failed")
+
+        with mock.patch(
+            "crush_lu.api_admin_events.call_command", side_effect=failing_command
+        ), self.assertLogs("crush_lu.api_admin_events", level="ERROR") as logs:
+            self.client.post(self.url, HTTP_AUTHORIZATION=f"Bearer {API_KEY}")
+
+        record = next(r for r in logs.records if "command output" in r.getMessage())
+        PIIMaskingFilter().filter(record)
+        rendered = record.getMessage()
+        self.assertIn("[23] Speed Dating @ Urban Bar: rejected", rendered)
+        self.assertNotIn("love@crush.lu", rendered)
+
 
 @override_settings(**CRUSH_URLS)
 class EventRemindersEndpointTests(_EndpointContract, TestCase):

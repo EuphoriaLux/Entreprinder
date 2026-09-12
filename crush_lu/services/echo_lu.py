@@ -1495,10 +1495,14 @@ def _listing_is_gone(client, experience_id):
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return None
+    # Split between connecting and reading. requests applies a single number
+    # to each phase separately, so a slow connect followed by a slow answer
+    # could spend nearly twice it; halves keep the two within `budget`. (A
+    # response trickling in byte by byte could still overrun — true of every
+    # call the sweep makes, and a small JSON answer does not trickle.)
+    budget = min(getattr(client, "timeout", remaining), remaining)
     try:
-        client.get_experience(
-            experience_id, timeout=min(getattr(client, "timeout", remaining), remaining)
-        )
+        client.get_experience(experience_id, timeout=(budget / 2, budget / 2))
     except EchoLuError as exc:
         if exc.status_code == 404:
             return True
