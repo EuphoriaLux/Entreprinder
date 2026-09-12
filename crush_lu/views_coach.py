@@ -3858,7 +3858,15 @@ def _record_panel_verification(profile, coach, now, reason):
     # exclude verified profiles — so the original coach would go on being
     # asked to chase somebody who is already verified.
     closable = ProfileSubmission.ACTIVE_REVIEW_STATUSES + ("rejected",)
-    submission = ProfileSubmission.latest_for_profile(profile)
+    # LOCK ORDER: CrushProfile → ProfileSubmission → ScreeningSlot, the order
+    # every verification path uses. The caller's `claim_profile_verification`
+    # UPDATE already holds the profile row; the submission lock comes next, and
+    # before the booked-slot read below. `ScreeningSlot.claim_for_submission`
+    # takes this same lock before it books, so a concurrent self-booking either
+    # commits first — its slot is then visible here and released — or waits and
+    # then sees "approved" and is refused. Unlocked, the slot query could run
+    # before that booking committed and leave it active for a verified member.
+    submission = ProfileSubmission.latest_for_profile(profile, for_update=True)
     if submission is not None and submission.status in closable:
         reopened = submission.status == "rejected"
         submission.status = "approved"
