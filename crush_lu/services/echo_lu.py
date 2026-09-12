@@ -1429,8 +1429,8 @@ def is_isolated_failure(error):
     500 to the ``EchoLuSync`` timer — or be reported and left on the event's
     sync row for a person to fix.
 
-    Isolated: echo.lu read this event's request and refused its payload (a
-    400 or 422), or we declined to send it for a reason of its own
+    Isolated: echo.lu read this event's payload and gave a verdict on it —
+    400, 409, 413 or 422 — or we declined to send it for a reason of its own
     (:class:`EchoLuNotSent` — an unlinked venue, no location). Each is
     already recorded on the row the admin renders, needs somebody to change
     something about *that event*, and fails identically every hour until they
@@ -1438,31 +1438,32 @@ def is_isolated_failure(error):
     identical exceptions over 18 days, which buried everything else and never
     said which event to fix.
 
-    Not isolated, so still loud: 401 and 403 (the key, which every event
-    shares), 404 (a route or base URL that has gone — the one 404 known to be
-    about a listing, "no published experience found", is handled before it
-    gets here), 408 and 429 (a timed-out request, the account's rate), a 5xx
-    or a request that got no answer (echo.lu itself), a missing key, a shared
+    Everything else is loud, every other 4xx included. Those are about the
+    key (401, 403), the route or base URL (404 and 405 — the one 404 known to
+    be about a listing, "no published experience found", is handled before it
+    gets here), the client's own request shape (406, 415) or the service
+    (408, 429), and every event shares all of them. An allowlist rather than
+    a list of exceptions, so a status nobody thought of fails loud. Also
+    loud: a 5xx or a request that got no answer, a missing key, a shared
     setting left empty (:class:`EchoLuMisconfigured`), and a create that came
-    back without an id. Those are what the sweep's failure exists for — a
-    revoked key, a moved API or a long outage must not read as a healthy run.
+    back without an id — a revoked key, a moved API or a long outage must not
+    read as a healthy run.
     """
     if isinstance(error, (EchoLuNotConfigured, EchoLuMisconfigured)):
         return False
     if isinstance(error, EchoLuNotSent):
         return True
-    status = getattr(error, "status_code", None)
-    return status is not None and 400 <= status < 500 and status not in _SWEEP_WIDE_4XX
+    return getattr(error, "status_code", None) in _PAYLOAD_VERDICT_4XX
 
 
-# 4xx answers about the key, the service or the route rather than one event's
-# payload. 404 is here because a gone route or stale base URL answers every
-# call with it; the one 404 known to be about a listing is handled first.
-_SWEEP_WIDE_4XX = frozenset({401, 403, 404, 408, 429})
+# The 4xx answers that are a verdict on one event's payload: malformed or
+# invalid content (400, 422), a conflict with that listing's state (409), a
+# payload too large (413). Every other status is shared by every event.
+_PAYLOAD_VERDICT_4XX = frozenset({400, 409, 413, 422})
 
 
 def _listing_is_gone(client, experience_id):
-    """True when echo.lu no longer holds the listing at all.
+    """Whether echo.lu no longer holds the listing: True, False or None.
 
     Asked only after an unpublish or cancel came back "no published
     experience found", which a draft and a listing deleted in the back office
@@ -1470,28 +1471,31 @@ def _listing_is_gone(client, experience_id):
     draft listings when they were checked by hand (2026-08-15). By then the
     route is known to work, so a 404 here is about the listing.
 
-    Anything inconclusive answers False. Keeping a dead id costs at worst the
-    stale id this exists to clear, while clearing a live draft's id makes the
-    next republish create a second listing beside it.
+    True means deleted, so forget the id; False means it is there (a draft),
+    so keep it. None means we do not know — the check was skipped or came
+    back inconclusive — and the caller must settle the row neither way:
+    clearing a live draft's id makes the next republish create a second
+    listing beside it, and settling as withdrawn keeps a possibly dead id for
+    good. See ``EchoExperienceSync.mark_unverified``.
 
     Optional, so it only runs inside the caller's budget. A client without a
     deadline — the admin's remove action and the save-triggered sync, which
     reserve time for one call per event inside a web request — or with none
-    left skips the lookup, which counts as inconclusive. Otherwise the GET is
-    cut to whatever time remains, and gets a single attempt.
+    left skips the lookup. Otherwise the GET is cut to whatever time remains,
+    and gets a single attempt.
     """
     deadline = getattr(client, "deadline", None)
     if deadline is None:
-        return False
+        return None
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        return False
+        return None
     try:
         client.get_experience(
             experience_id, timeout=min(getattr(client, "timeout", remaining), remaining)
         )
     except EchoLuError as exc:
-        return exc.status_code == 404
+        return True if exc.status_code == 404 else None
     return False
 
 
@@ -1920,11 +1924,14 @@ def withdraw_event(event, client=None, dry_run=False, explicit=False):
                 nothing_public = True
                 gone = _listing_is_gone(client, sync.experience_id)
                 logger.info(
-                    "echo.lu has no published listing %s for event %s%s; "
-                    "recording the take-down as done",
+                    "echo.lu has no published listing %s for event %s%s",
                     sync.experience_id,
                     event.pk,
-                    " (deleted there, so its id is forgotten)" if gone else "",
+                    {
+                        True: " (deleted there, so its id is forgotten)",
+                        False: " (a draft, so its id is kept)",
+                        None: " (not checked yet, so left pending for the sweep)",
+                    }[gone],
                 )
                 if gone:
                     # Kept, a dead id would send the next republish to PUT at
@@ -1932,7 +1939,17 @@ def withdraw_event(event, client=None, dry_run=False, explicit=False):
                     # only takes orphans. Cleared, the republish creates.
                     sync.experience_id = ""
                     sync.save(update_fields=["experience_id", "updated_at"])
-            if send_notice and not nothing_public:
+            if nothing_public and gone is None:
+                # Nothing is public, but whether the id is still good is not
+                # known, so settle neither way. The sweep re-selects a PENDING
+                # row that still has its id and makes the check with the
+                # budget for it; no create can come of it meanwhile.
+                sync.mark_unverified(
+                    "echo.lu shows nothing public under this listing; whether "
+                    "it is a draft or was deleted in the back office is "
+                    "checked on the next sweep"
+                )
+            elif send_notice and not nothing_public:
                 sync.mark_cancelled()
             else:
                 # A cancel answered "no published experience" lands here too,

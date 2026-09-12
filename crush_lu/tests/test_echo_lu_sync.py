@@ -1634,10 +1634,11 @@ class SyncEventTests(TestCase):
             EchoExperienceSync.objects.get(event=event).experience_id, "exp-new"
         )
 
-    def test_an_inconclusive_check_keeps_the_id(self):
-        # If the GET cannot say either way, clearing the id risks a second
-        # listing beside a live draft. Keeping it costs at worst the old stale
-        # id, so that is the side to err on.
+    def test_an_inconclusive_check_leaves_the_row_pending(self):
+        # If the GET cannot say either way, settling the row either way is a
+        # guess: clearing the id risks a second listing beside a live draft,
+        # and WITHDRAWN would keep a possibly dead id for good. PENDING with
+        # the id kept leaves it for the next sweep to check.
         event = make_event()
         echo_lu.sync_event(event, client=FakeClient())
 
@@ -1646,31 +1647,43 @@ class SyncEventTests(TestCase):
         client = DeletedListingClient()
         client.get_status = 503
         self.assertEqual(echo_lu.sync_event(event, client=client), "withdrawn")
-        self.assertEqual(
-            EchoExperienceSync.objects.get(event=event).experience_id, "exp-123"
-        )
 
-    def test_a_client_without_a_deadline_skips_the_check_and_keeps_the_id(self):
+        sync = EchoExperienceSync.objects.get(event=event)
+        self.assertEqual(sync.status, EchoExperienceSync.Status.PENDING)
+        self.assertEqual(sync.experience_id, "exp-123")
+        self.assertIn(event, list(echo_lu.events_needing_sync()))
+
+    def test_a_client_without_a_deadline_leaves_the_check_to_the_sweep(self):
         # The admin's remove action and the save-triggered sync run inside a
-        # web request with time reserved for one call per event. They build
-        # their clients without a deadline, so the follow-up GET is skipped
-        # rather than tacked on unreserved — and skipping keeps the id, the
-        # side that can never create a second listing.
+        # web request with time reserved for one call per event, and build
+        # their clients without a deadline. They skip the follow-up GET and
+        # leave the row PENDING with its id; the next sweep — which has the
+        # budget — makes the check and settles it. No create at any point.
         event = make_event()
         echo_lu.sync_event(event, client=FakeClient())
 
         MeetupEvent.objects.filter(pk=event.pk).update(is_published=False)
         event.refresh_from_db()
-        client = DeletedListingClient()
-        client.deadline = None
-        self.assertEqual(echo_lu.sync_event(event, client=client), "withdrawn")
+        inline = DeletedListingClient()
+        inline.deadline = None
+        self.assertEqual(echo_lu.sync_event(event, client=inline), "withdrawn")
 
-        self.assertEqual(client.calls, [("unpublish", "exp-123")])
-        self.assertEqual(
-            EchoExperienceSync.objects.get(event=event).experience_id, "exp-123"
-        )
+        self.assertEqual(inline.calls, [("unpublish", "exp-123")])
+        sync = EchoExperienceSync.objects.get(event=event)
+        self.assertEqual(sync.status, EchoExperienceSync.Status.PENDING)
+        self.assertEqual(sync.experience_id, "exp-123")
 
-    def test_a_spent_deadline_skips_the_check(self):
+        # The next sweep checks, finds it deleted, and forgets the id.
+        event.refresh_from_db()
+        self.assertIn(event, list(echo_lu.events_needing_sync()))
+        sweep = DeletedListingClient()
+        self.assertEqual(echo_lu.sync_event(event, client=sweep), "withdrawn")
+        self.assertEqual([call[0] for call in sweep.calls], ["unpublish", "get"])
+        sync.refresh_from_db()
+        self.assertEqual(sync.status, EchoExperienceSync.Status.WITHDRAWN)
+        self.assertEqual(sync.experience_id, "")
+
+    def test_a_spent_deadline_leaves_the_row_pending(self):
         import time
 
         event = make_event()
@@ -1683,9 +1696,9 @@ class SyncEventTests(TestCase):
         self.assertEqual(echo_lu.sync_event(event, client=client), "withdrawn")
 
         self.assertEqual(client.calls, [("unpublish", "exp-123")])
-        self.assertEqual(
-            EchoExperienceSync.objects.get(event=event).experience_id, "exp-123"
-        )
+        sync = EchoExperienceSync.objects.get(event=event)
+        self.assertEqual(sync.status, EchoExperienceSync.Status.PENDING)
+        self.assertEqual(sync.experience_id, "exp-123")
 
     def test_the_check_fits_in_the_time_left_and_is_never_retried(self):
         # Clamped to what is left of the caller's budget, and one attempt
@@ -1700,7 +1713,8 @@ class SyncEventTests(TestCase):
         with mock.patch(
             "crush_lu.services.echo_lu.requests.request", return_value=failing
         ) as request:
-            self.assertFalse(echo_lu._listing_is_gone(client, "exp-1"))
+            # Inconclusive, not "it exists": the row must not be settled.
+            self.assertIsNone(echo_lu._listing_is_gone(client, "exp-1"))
 
         self.assertEqual(request.call_count, 1)
         self.assertLessEqual(request.call_args.kwargs["timeout"], 3)
@@ -2257,6 +2271,8 @@ class IsolatedFailureTests(TestCase):
         for error in (
             echo_lu.EchoLuNotSent("no echo.lu venue is linked"),
             echo_lu.EchoLuError("unknown category", status_code=400),
+            echo_lu.EchoLuError("listing state conflict", status_code=409),
+            echo_lu.EchoLuError("description too large", status_code=413),
             echo_lu.EchoLuError("invalid field", status_code=422),
         ):
             with self.subTest(error=str(error)):
@@ -2268,6 +2284,12 @@ class IsolatedFailureTests(TestCase):
             echo_lu.EchoLuError("forbidden", status_code=403),
             # A route or base URL that has gone answers every call with this.
             echo_lu.EchoLuError("Cannot PUT /v1/experiences/x", status_code=404),
+            # An endpoint whose method changed, and a Content-Type the API no
+            # longer takes: route and client shape, shared by every event.
+            echo_lu.EchoLuError("method not allowed", status_code=405),
+            echo_lu.EchoLuError("unsupported media type", status_code=415),
+            # A status nobody listed fails loud, not quiet.
+            echo_lu.EchoLuError("I'm a teapot", status_code=418),
             echo_lu.EchoLuError("request timeout", status_code=408),
             echo_lu.EchoLuMisconfigured("requires categories"),
             echo_lu.EchoLuError("slow down", status_code=429),

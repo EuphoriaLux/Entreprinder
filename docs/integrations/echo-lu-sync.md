@@ -355,9 +355,12 @@ had already committed. Anything not reached is named in a message and left to
 the sweep.
 
 **Sweep-wide failures reach the timer.** If echo.lu refuses the key (401/403),
-times the request out (408), rate-limits the account (429), answers 404
-(other than the one recognised take-down answer under *Take-downs* — a 404
-can mean the route or base URL is gone), answers 5xx or does not answer at
+times the request out (408), rate-limits the account (429), answers 404 or
+405 (other than the one recognised take-down answer under *Take-downs* — a
+gone route or base URL answers every call that way), rejects the request's
+shape (406, 415) or answers any other 4xx that is not a verdict on one
+event's payload — only 400, 409, 413 and 422 count as that, so a status
+nobody listed fails loud — answers 5xx or does not answer at
 all, or a shared setting leaves every payload unsendable (an empty
 `ECHO_LU_DEFAULT_*` facet or fallback picture), the
 command exits non-zero and the endpoint answers 500, so the Function's failure
@@ -420,13 +423,17 @@ hour.
 Before recording it, the sync asks echo.lu for the listing itself — one `GET`,
 made only on this answer, and only within the caller's time budget. The
 hourly sweep has budget for it; the admin's remove action and the
-save-triggered sync run inside a web request and skip it, keeping the id —
-the safe side. If the `GET` finds it, it is a draft and the id is
+save-triggered sync run inside a web request and skip it. A skipped or
+inconclusive check leaves the row **Pending** with its id kept: nothing is
+public, the sweep re-selects the row and makes the check with time to spare,
+and no create can come of it while the id is set. If the `GET` finds it, it
+is a draft and the id is
 kept, so re-publishing updates it. If the `GET` 404s too, the listing was
 deleted in the back office: the id is cleared, so re-publishing creates a
 fresh listing instead of updating one that no longer exists forever. (The
 route is known to work at that point — the unpublish answer proved it.)
-Anything inconclusive keeps the id.
+An inconclusive answer is handled like a skipped check: Pending, id kept,
+checked again on the next sweep.
 
 A `cancel` that gets the same answer is recorded as **Withdrawn**, not
 Cancelled: no notice is showing, and Cancelled would tell the sweep one is and
