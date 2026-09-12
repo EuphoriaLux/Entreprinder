@@ -1022,7 +1022,6 @@ class PanelVerificationLockOrderTests(SimpleTestCase):
         self.assertLess(lock, src.index("_send_confirmation_email("))
 
 
-@override_settings(**CRUSH_LU_URL_SETTINGS)
 class BookingConfirmationSerializationTests(CoachUnverifiedBase):
     """`confirm_booking` after its claim commits, racing panel verification.
 
@@ -1031,6 +1030,11 @@ class BookingConfirmationSerializationTests(CoachUnverifiedBase):
     requests, so the claim is stubbed to commit and then, when asked, to play
     the verifier before handing back its now-stale instances — which is what
     the view sees on PostgreSQL.
+
+    Posted by Host header to the literal path, like
+    `CoachUnverifiedHostRoutingTests`, not via `reverse()` under a
+    `ROOT_URLCONF` override: that would stay green if the real crush.lu route
+    stopped resolving.
     """
 
     def _submission(self, email):
@@ -1074,10 +1078,7 @@ class BookingConfirmationSerializationTests(CoachUnverifiedBase):
                 verifier.save(update_fields=["status", "system_actions"])
             return slot, claimed
 
-        url = reverse(
-            "crush_lu:confirm_booking",
-            kwargs={"booking_token": submission.booking_token},
-        )
+        url = f"/en/book/{submission.booking_token}/confirm/"
         with patch(
             "crush_lu.views_booking.ScreeningSlot.claim_for_submission",
             side_effect=claim,
@@ -1090,6 +1091,7 @@ class BookingConfirmationSerializationTests(CoachUnverifiedBase):
                         "start_at": start_at.isoformat(),
                         "end_at": end_at.isoformat(),
                     },
+                    HTTP_HOST="crush.lu",
                 )
         submission.refresh_from_db()
         actions = [entry["type"] for entry in submission.system_actions or []]
@@ -1101,6 +1103,7 @@ class BookingConfirmationSerializationTests(CoachUnverifiedBase):
         resp, send, actions = self._confirm(submission, verifier_wins_the_gap=False)
 
         self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], f"/en/book/{submission.booking_token}/")
         send.assert_called_once()
         self.assertIn("booking_confirmed", actions)
 
@@ -1110,6 +1113,7 @@ class BookingConfirmationSerializationTests(CoachUnverifiedBase):
         resp, send, actions = self._confirm(submission, verifier_wins_the_gap=True)
 
         self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], f"/en/book/{submission.booking_token}/")
         send.assert_not_called()
         self.assertNotIn("booking_confirmed", actions)
         # The verifier's audit entry survives: the view appends to the locked
