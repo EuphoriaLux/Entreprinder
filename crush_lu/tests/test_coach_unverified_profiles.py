@@ -1009,6 +1009,114 @@ class PanelVerificationLockOrderTests(SimpleTestCase):
             "holds the profile row while it waits on this submission lock.",
         )
 
+    def test_booking_confirmation_relocks_before_logging_or_emailing(self):
+        """The claim releases its lock on commit; the confirmation must not
+        run on the instance it handed back. See `confirm_booking`."""
+        import inspect
+
+        from crush_lu import views_booking
+
+        src = inspect.getsource(views_booking.confirm_booking)
+        lock = src.index("select_for_update(")
+        self.assertLess(lock, src.index('"booking_confirmed"'))
+        self.assertLess(lock, src.index("_send_confirmation_email("))
+
+
+@override_settings(**CRUSH_LU_URL_SETTINGS)
+class BookingConfirmationSerializationTests(CoachUnverifiedBase):
+    """`confirm_booking` after its claim commits, racing panel verification.
+
+    The claim releases the submission lock when it commits, and a verifier can
+    take it in that gap and cancel the fresh slot. SQLite cannot interleave two
+    requests, so the claim is stubbed to commit and then, when asked, to play
+    the verifier before handing back its now-stale instances — which is what
+    the view sees on PostgreSQL.
+    """
+
+    def _submission(self, email):
+        from uuid import uuid4
+
+        from crush_lu.models import ProfileSubmission
+
+        return ProfileSubmission.objects.create(
+            profile=self._profile(email),
+            status="pending",
+            coach=self.other_coach,
+            booking_token=uuid4(),
+            booking_token_expires_at=timezone.now() + timedelta(days=7),
+        )
+
+    def _confirm(self, submission, *, verifier_wins_the_gap):
+        from crush_lu.models import ProfileSubmission, ScreeningSlot
+
+        start_at = timezone.now() + timedelta(days=1)
+        end_at = start_at + timedelta(minutes=30)
+
+        def claim(**kwargs):
+            slot = ScreeningSlot.objects.create(
+                coach=self.other_coach,
+                submission=submission,
+                status="booked",
+                start_at=start_at,
+                end_at=end_at,
+            )
+            claimed = ProfileSubmission.objects.get(pk=submission.pk)
+            if verifier_wins_the_gap:
+                # What `_record_panel_verification` commits once it gets the lock.
+                verifier = ProfileSubmission.objects.get(pk=submission.pk)
+                ScreeningSlot.objects.filter(pk=slot.pk).update(
+                    status="cancelled", cancelled_reason="verified_by_coach"
+                )
+                verifier.status = "approved"
+                verifier.log_system_action(
+                    "booking_cancelled", actor=f"coach:{self.coach.pk}", slot_id=slot.id
+                )
+                verifier.save(update_fields=["status", "system_actions"])
+            return slot, claimed
+
+        url = reverse(
+            "crush_lu:confirm_booking",
+            kwargs={"booking_token": submission.booking_token},
+        )
+        with patch(
+            "crush_lu.views_booking.ScreeningSlot.claim_for_submission",
+            side_effect=claim,
+        ):
+            with patch("crush_lu.views_booking._send_confirmation_email") as send:
+                resp = self.client.post(
+                    url,
+                    {
+                        "coach_id": str(self.other_coach.pk),
+                        "start_at": start_at.isoformat(),
+                        "end_at": end_at.isoformat(),
+                    },
+                )
+        submission.refresh_from_db()
+        actions = [entry["type"] for entry in submission.system_actions or []]
+        return resp, send, actions
+
+    def test_a_slot_still_booked_is_confirmed_and_emailed(self):
+        submission = self._submission("booked@example.com")
+
+        resp, send, actions = self._confirm(submission, verifier_wins_the_gap=False)
+
+        self.assertEqual(resp.status_code, 302)
+        send.assert_called_once()
+        self.assertIn("booking_confirmed", actions)
+
+    def test_no_confirmation_for_a_slot_verification_cancelled_in_the_gap(self):
+        submission = self._submission("gap@example.com")
+
+        resp, send, actions = self._confirm(submission, verifier_wins_the_gap=True)
+
+        self.assertEqual(resp.status_code, 302)
+        send.assert_not_called()
+        self.assertNotIn("booking_confirmed", actions)
+        # The verifier's audit entry survives: the view appends to the locked
+        # row, not to the stale instance the claim handed back.
+        self.assertIn("booking_cancelled", actions)
+        self.assertEqual(submission.status, "approved")
+
 
 class CoachUnverifiedHostRoutingTests(CoachUnverifiedBase):
     """Reach the page the way production does: by Host header.
