@@ -318,7 +318,9 @@ class Command(BaseCommand):
             if systemic:
                 parts.append(
                     f"{len(systemic)} event(s) failed on echo.lu's side or the "
-                    f"key's (auth, rate limit, 5xx or no answer)"
+                    f"key's, or on a shared setting (auth, a missing route, "
+                    f"rate limit, timeout, 5xx, no answer, an empty "
+                    f"ECHO_LU_DEFAULT_* facet or fallback picture)"
                 )
             if isolated:
                 parts.append(f"{len(isolated)} event(s) rejected by echo.lu")

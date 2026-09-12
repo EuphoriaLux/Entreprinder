@@ -134,6 +134,10 @@ class FakeClient:
         self._record("update", experience_id, payload)
         return echo_response({"id": experience_id})
 
+    def get_experience(self, experience_id):
+        self._record("get", experience_id)
+        return echo_response({"id": experience_id})
+
     def cancel_experience(self, experience_id):
         self._record("cancel", experience_id)
         return {}
@@ -155,12 +159,32 @@ class DraftListingClient(FakeClient):
     2026-08-26.
     """
 
-    def unpublish_experience(self, experience_id):
-        self._record("unpublish", experience_id)
+    def _not_published(self, action, experience_id):
+        self._record(action, experience_id)
         raise echo_lu.EchoLuError(
-            f"echo.lu PATCH /experiences/{experience_id}/unpublish rejected",
+            f"echo.lu PATCH /experiences/{experience_id}/{action} rejected",
             status_code=404,
             body="REQUEST FAILED - no published experience found",
+        )
+
+    def unpublish_experience(self, experience_id):
+        self._not_published("unpublish", experience_id)
+
+    def cancel_experience(self, experience_id):
+        self._not_published("cancel", experience_id)
+
+
+class DeletedListingClient(DraftListingClient):
+    """The same answers for a listing deleted in the back office — except that
+    its detail 404s too. Set ``get_status`` for an inconclusive answer."""
+
+    get_status = 404
+
+    def get_experience(self, experience_id):
+        self._record("get", experience_id)
+        raise echo_lu.EchoLuError(
+            f"echo.lu GET /experiences/{experience_id} rejected",
+            status_code=self.get_status,
         )
 
 
@@ -810,6 +834,39 @@ class UnsendablePayloadTests(TestCase):
         event.refresh_from_db()
         self.assertEqual(event.echo_sync.status, EchoExperienceSync.Status.FAILED)
         self.assertIn("categories", event.echo_sync.last_error)
+
+    @override_settings(
+        ECHO_LU_DEFAULT_CATEGORIES="",
+        ECHO_LU_DEFAULT_AUDIENCES="",
+        ECHO_LU_DEFAULT_FORMATS="",
+        ECHO_LU_DEFAULT_ENVIRONMENTS="",
+    )
+    def test_a_blanked_shared_setting_fails_the_sweep(self):
+        # A blanked facet refuses every event at once, before any request.
+        # Warned about one event at a time, the timer would stay green on a
+        # sweep that can sync nothing at all — so it is its own class and it
+        # fails the run, while the row itself stays retryable.
+        from django.core.management.base import CommandError
+
+        event = make_event()
+        with self.assertRaises(echo_lu.EchoLuMisconfigured):
+            echo_lu.sync_event(event, client=FakeClient())
+
+        with mock.patch.object(echo_lu, "EchoLuClient", return_value=FakeClient()):
+            with self.assertRaises(CommandError):
+                call_command(
+                    "sync_events_to_echo", stdout=StringIO(), stderr=StringIO()
+                )
+
+    def test_an_event_without_a_venue_is_refused_on_its_own(self):
+        # The event-local counterpart: no location means no venue, which is
+        # this event's to fix and says nothing about the rest of the calendar.
+        event = make_event(location="", link_venue=False)
+        with self.assertRaises(echo_lu.EchoLuNotSent) as caught:
+            echo_lu.sync_event(event, client=FakeClient())
+
+        self.assertNotIsInstance(caught.exception, echo_lu.EchoLuMisconfigured)
+        self.assertTrue(echo_lu.is_isolated_failure(caught.exception))
 
     @override_settings(
         ECHO_LU_DEFAULT_CATEGORIES="",
@@ -1539,12 +1596,78 @@ class SyncEventTests(TestCase):
         client = DraftListingClient()
         self.assertEqual(echo_lu.sync_event(event, client=client), "withdrawn")
 
-        self.assertEqual(client.calls, [("unpublish", "exp-123")])
+        # The GET finds the draft, so its id is kept for a later republish.
+        self.assertEqual(client.calls, [("unpublish", "exp-123"), ("get", "exp-123")])
         sync = EchoExperienceSync.objects.get(event=event)
         self.assertEqual(sync.status, EchoExperienceSync.Status.WITHDRAWN)
         self.assertEqual(sync.experience_id, "exp-123")
         self.assertEqual(sync.last_error, "")
         self.assertNotIn(event, list(echo_lu.events_needing_sync()))
+
+    def test_a_listing_deleted_upstream_forgets_its_id(self):
+        # The same unpublish answer comes back for a listing deleted in the
+        # back office. Its id is dead: kept, a later republish would PUT to it
+        # and 404 for ever, and --forget only accepts orphans. The GET tells
+        # the two apart, and a gone listing's id is cleared so a republish
+        # creates a fresh one.
+        event = make_event()
+        echo_lu.sync_event(event, client=FakeClient())
+
+        MeetupEvent.objects.filter(pk=event.pk).update(is_published=False)
+        event.refresh_from_db()
+        self.assertEqual(
+            echo_lu.sync_event(event, client=DeletedListingClient()), "withdrawn"
+        )
+        sync = EchoExperienceSync.objects.get(event=event)
+        self.assertEqual(sync.status, EchoExperienceSync.Status.WITHDRAWN)
+        self.assertEqual(sync.experience_id, "")
+
+        MeetupEvent.objects.filter(pk=event.pk).update(is_published=True)
+        event.refresh_from_db()
+        client = FakeClient(create_response=echo_response({"id": "exp-new"}))
+        self.assertEqual(echo_lu.sync_event(event, client=client), "created")
+        self.assertEqual(
+            EchoExperienceSync.objects.get(event=event).experience_id, "exp-new"
+        )
+
+    def test_an_inconclusive_check_keeps_the_id(self):
+        # If the GET cannot say either way, clearing the id risks a second
+        # listing beside a live draft. Keeping it costs at worst the old stale
+        # id, so that is the side to err on.
+        event = make_event()
+        echo_lu.sync_event(event, client=FakeClient())
+
+        MeetupEvent.objects.filter(pk=event.pk).update(is_published=False)
+        event.refresh_from_db()
+        client = DeletedListingClient()
+        client.get_status = 503
+        self.assertEqual(echo_lu.sync_event(event, client=client), "withdrawn")
+        self.assertEqual(
+            EchoExperienceSync.objects.get(event=event).experience_id, "exp-123"
+        )
+
+    def test_cancelling_a_draft_rests_as_cancelled(self):
+        # A cancel gets the same answer for a draft. Nothing is public, so
+        # there is no notice to show and nobody who needs one. Recorded as
+        # CANCELLED, the sweep leaves it until the event ends; as a failure,
+        # every cancelled upcoming draft would 404 once an hour instead.
+        event = make_event()
+        echo_lu.sync_event(event, client=FakeClient())
+
+        MeetupEvent.objects.filter(pk=event.pk).update(is_cancelled=True)
+        event.refresh_from_db()
+        client = DraftListingClient()
+        echo_lu.sync_event(event, client=client)
+
+        self.assertEqual([call[0] for call in client.calls], ["cancel", "get"])
+        sync = EchoExperienceSync.objects.get(event=event)
+        self.assertEqual(sync.status, EchoExperienceSync.Status.CANCELLED)
+        self.assertEqual(sync.experience_id, "exp-123")
+
+        event.refresh_from_db()
+        again = DraftListingClient()
+        self.assertEqual(echo_lu.sync_event(event, client=again), "skipped")
+        self.assertEqual(again.calls, [])
 
     def test_an_explicit_removal_of_a_draft_is_satisfied(self):
         # Same answer, asked for by hand: the removal is done, so the request
@@ -2068,7 +2191,6 @@ class IsolatedFailureTests(TestCase):
         for error in (
             echo_lu.EchoLuNotSent("no echo.lu venue is linked"),
             echo_lu.EchoLuError("unknown category", status_code=400),
-            echo_lu.EchoLuError("no published experience", status_code=404),
             echo_lu.EchoLuError("invalid field", status_code=422),
         ):
             with self.subTest(error=str(error)):
@@ -2078,7 +2200,10 @@ class IsolatedFailureTests(TestCase):
         for error in (
             echo_lu.EchoLuError("key revoked", status_code=401),
             echo_lu.EchoLuError("forbidden", status_code=403),
+            # A route or base URL that has gone answers every call with this.
+            echo_lu.EchoLuError("Cannot PUT /v1/experiences/x", status_code=404),
             echo_lu.EchoLuError("request timeout", status_code=408),
+            echo_lu.EchoLuMisconfigured("requires categories"),
             echo_lu.EchoLuError("slow down", status_code=429),
             echo_lu.EchoLuError("echo.lu is down", status_code=500),
             echo_lu.EchoLuError("echo.lu PUT failed: Read timed out"),

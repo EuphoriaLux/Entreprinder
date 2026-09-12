@@ -353,8 +353,11 @@ had already committed. Anything not reached is named in a message and left to
 the sweep.
 
 **Sweep-wide failures reach the timer.** If echo.lu refuses the key (401/403),
-times the request out (408), rate-limits the account (429), answers 5xx or
-does not answer at all, the
+times the request out (408), rate-limits the account (429), answers 404
+(other than the one recognised take-down answer under *Take-downs* — a 404
+can mean the route or base URL is gone), answers 5xx or does not answer at
+all, or a shared setting leaves every payload unsendable (an empty
+`ECHO_LU_DEFAULT_*` facet or fallback picture), the
 command exits non-zero and the endpoint answers 500, so the Function's failure
 count moves. A revoked key or a long outage shows up there instead of staying
 green on a job that quietly synced nothing.
@@ -400,13 +403,25 @@ python manage.py sync_events_to_echo --audit
 An unpublish that echo.lu answers with **404 `no published experience
 found`** is recorded as **Withdrawn**, not as a failure. Only that answer — a
 404 with any other body (a stale `ECHO_LU_API_BASE_URL`, a moved route) says
-nothing about the listing and stays a failure. It means the listing was never
+nothing about the listing and stays a failure. The recognised answer means the listing was never
 public — a draft nobody submitted, which is every listing created
 with `ECHO_LU_CREATE_STATUS=draft` — or was deleted in the back office. Either
 way the take-down's goal already holds. Recorded as Failed, the row stayed in
 the sweep and each finished draft retried the same impossible unpublish every
-hour. A `cancel` that 404s is still a failure; once the event ends, the sweep
-unpublishes it instead and it settles the same way.
+hour.
+
+Before recording it, the sync asks echo.lu for the listing itself — one `GET`,
+made only on this answer. If the `GET` finds it, it is a draft and the id is
+kept, so re-publishing updates it. If the `GET` 404s too, the listing was
+deleted in the back office: the id is cleared, so re-publishing creates a
+fresh listing instead of updating one that no longer exists forever. (The
+route is known to work at that point — the unpublish answer proved it.)
+Anything inconclusive keeps the id.
+
+A `cancel` that gets the same answer is recorded as **Cancelled**: nothing is
+public, so there is nobody for a notice to reach, and the row rests until the
+event ends and the sweep unpublishes it. A `cancel` 404 with any other body is
+a failure.
 
 Cancelling only applies while the event is *otherwise still public*. A
 cancellation notice is a published thing — it keeps the title, venue and date
