@@ -500,8 +500,10 @@ Either way the row goes to **Orphaned**, which blocks every automatic create
 for that event — including `--force`, because a second create is the one thing
 this state exists to prevent. It is the only status that needs a human, and
 the hourly sweep names it as `blocked` in its `WARNING` every run until it is
-resolved, so it will not sit unnoticed. (It no longer fails the sweep: one
-orphan did, hourly, for 18 days, and the exception never said which event.)
+resolved, and the admin shows the row as Orphaned. It no longer fails the
+sweep — one orphan did, hourly, for 18 days, and the exception never said
+which event — so nothing *pages* on it: somebody has to read that warning, or
+put an alert rule on it.
 
 Find out which happened:
 
