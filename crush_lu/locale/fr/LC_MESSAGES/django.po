@@ -41313,3 +41313,194 @@ msgid ""
 msgstr ""
 "Le groupe peut encore changer jusqu’à son verrouillage avant la première "
 "ronde. Vos tables apparaîtront ici une fois qu’il sera définitif."
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "Signal"
+msgstr "Signal"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "LuxID linked"
+msgstr "LuxID lié"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "No coach owns it"
+msgstr "Aucun coach ne s'en occupe"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "Open profile"
+msgstr "Ouvrir le profil"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "Nothing waiting here"
+msgstr "Rien en attente ici"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "No unverified profile matches these filters."
+msgstr "Aucun profil non vérifié ne correspond à ces filtres."
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "Every active profile is verified."
+msgstr "Tous les profils actifs sont vérifiés."
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "Name or email"
+msgstr "Nom ou e-mail"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "No photo — the door scan cannot verify this profile"
+msgstr "Pas de photo — le scan à l'entrée ne peut pas vérifier ce profil"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "Was at an event and still is not verified"
+msgstr "A participé à un événement et n'est toujours pas vérifié"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "A door scan skips profiles without a photo"
+msgstr "Un scan à l'entrée ignore les profils sans photo"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "LuxID is linked but the profile is still not verified"
+msgstr "LuxID est lié mais le profil n'est toujours pas vérifié"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "Only their own assigned coach may verify a premium member"
+msgstr "Seul le coach attribué peut vérifier un membre premium"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid "No open submission — no coach is carrying this one"
+msgstr "Aucune soumission ouverte — aucun coach ne s'en charge"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+msgid ""
+"Everyone still waiting for verification — including the members who never "
+"entered a review queue. Open a profile to check it and verify."
+msgstr ""
+"Toutes les personnes en attente de vérification — y compris les membres qui "
+"ne sont jamais entrés dans une file de contrôle. Ouvrez un profil pour le "
+"contrôler et le vérifier."
+
+#: templates/crush_lu/coach_unverified_profiles.html
+#, python-format
+msgid "Latest submission: %(status)s"
+msgstr "Dernière soumission : %(status)s"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+#, python-format
+msgid "Updated %(age)s ago"
+msgstr "Mis à jour il y a %(age)s"
+
+#: views_coach.py
+msgid "Recently updated"
+msgstr "Récemment mis à jour"
+
+#: views_coach.py
+msgid "Waiting longest"
+msgstr "En attente depuis le plus longtemps"
+
+#: views_coach.py
+msgid "Name (A-Z)"
+msgstr "Nom (A-Z)"
+
+#: views_coach.py
+msgid "Attended but unverified"
+msgstr "A participé mais non vérifié"
+
+#: views_coach.py
+msgid "Booked on an event"
+msgstr "Inscrit à un événement"
+
+#: views_coach.py
+msgid "Confirm you have checked this member's identity before verifying."
+msgstr ""
+"Confirmez que vous avez contrôlé l'identité de ce membre avant de le "
+"vérifier."
+
+#: views_coach.py
+msgid "This member has no profile to verify."
+msgstr "Ce membre n'a pas de profil à vérifier."
+
+#: views_coach.py
+msgid "This member is already verified."
+msgstr "Ce membre est déjà vérifié."
+
+#: views_coach.py
+msgid "Could not verify this profile. Please try again."
+msgstr "Ce profil n'a pas pu être vérifié. Veuillez réessayer."
+
+#: templates/crush_lu/coach_member_overview.html
+msgid "Verify this member"
+msgstr "Vérifier ce membre"
+
+#: templates/crush_lu/coach_member_overview.html
+msgid ""
+"Records a manual verification by Crush.lu. It does not count as in-person "
+"attendance."
+msgstr ""
+"Enregistre une vérification manuelle par Crush.lu. Elle ne compte pas comme "
+"une présence en personne."
+
+#: templates/crush_lu/coach_member_overview.html
+msgid "Verify…"
+msgstr "Vérifier…"
+
+#: templates/crush_lu/coach_member_overview.html
+msgid "I have checked this member's identity and their photo matches."
+msgstr "J'ai contrôlé l'identité de ce membre et sa photo correspond."
+
+#: templates/crush_lu/coach_member_overview.html
+msgid "Note (optional)"
+msgstr "Note (facultatif)"
+
+#: templates/crush_lu/coach_member_overview.html
+msgid "e.g. checked ID at the September meetup"
+msgstr "p. ex. pièce d'identité contrôlée au meetup de septembre"
+
+#: templates/crush_lu/coach_member_overview.html
+msgid "Saved to the review record and visible in Verification History."
+msgstr ""
+"Enregistré dans le dossier de contrôle et visible dans l'historique des "
+"vérifications."
+
+#: templates/crush_lu/coach_member_overview.html
+msgid "Verify member"
+msgstr "Vérifier le membre"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+#, python-format
+msgid "%(counter)s profile waiting"
+msgid_plural "%(counter)s profiles waiting"
+msgstr[0] "%(counter)s profil en attente"
+msgstr[1] "%(counter)s profils en attente"
+
+#: templates/crush_lu/coach_unverified_profiles.html
+#, python-format
+msgid "%(counter)s event attended"
+msgid_plural "%(counter)s events attended"
+msgstr[0] "%(counter)s événement suivi"
+msgstr[1] "%(counter)s événements suivis"
+
+#: views_coach.py
+msgid "This member's account is not active."
+msgstr "Le compte de ce membre n'est pas actif."
+
+#: views_coach.py
+msgid "This member is banned from Crush.lu."
+msgstr "Ce membre est banni de Crush.lu."
+
+#: views_coach.py
+msgid "This member has not consented to Crush.lu."
+msgstr "Ce membre n'a pas donné son consentement à Crush.lu."
+
+#: views_coach.py
+msgid "You cannot verify your own profile."
+msgstr "Vous ne pouvez pas vérifier votre propre profil."
+
+#: views_coach.py
+msgid "This member has no photo yet, so it cannot be checked here."
+msgstr ""
+"Ce membre n'a pas encore de photo, elle ne peut donc pas être vérifiée ici."
+
+#: views_coach.py
+msgid "This member's photo changed. Reload and check the new one."
+msgstr ""
+"La photo de ce membre a changé. Rechargez et vérifiez la nouvelle photo."
