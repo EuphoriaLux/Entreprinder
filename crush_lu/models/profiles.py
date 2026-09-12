@@ -1638,7 +1638,7 @@ class ProfileSubmission(models.Model):
         return f"{self.profile.user.username} - {self.get_status_display()}"
 
     @classmethod
-    def latest_for_profile(cls, profile, *, select_related=None):
+    def latest_for_profile(cls, profile, *, select_related=None, for_update=False):
         """Latest submission for a profile, treating an expired latest row
         as no submission at all.
 
@@ -1646,10 +1646,19 @@ class ProfileSubmission(models.Model):
         expired row closed out the user's whole coach-review story, so
         resurrecting an older revision/pending row would pull them back
         into the legacy flow the cleanup routed them out of.
+
+        ``for_update=True`` row-locks the returned submission, so it must run
+        inside ``transaction.atomic()``; the expired check then reads the
+        locked row. The lock is ``of=("self",)`` because ``coach`` is nullable:
+        with ``select_related("coach")`` a plain ``FOR UPDATE`` would reach the
+        nullable side of an outer join, which PostgreSQL refuses — and SQLite,
+        which ignores row locks, would never show it.
         """
         qs = cls.objects.filter(profile=profile)
         if select_related:
             qs = qs.select_related(*select_related)
+        if for_update:
+            qs = qs.select_for_update(of=("self",))
         latest = qs.order_by("-submitted_at").first()
         if latest is not None and latest.status == "expired":
             return None
@@ -1975,6 +1984,11 @@ class ScreeningSlot(models.Model):
 
         Returns (slot, submission). Raises ProfileSubmission.DoesNotExist
         on bad token, ValidationError on overlap or expiry issues.
+
+        LOCK ORDER: panel verification (`views_coach._record_panel_verification`)
+        takes this same submission lock before it releases booked slots, while
+        already holding the member's CrushProfile row. Keep this path free of
+        CrushProfile writes, or the two deadlock on PostgreSQL.
         """
         from django.core.exceptions import ValidationError
         from django.db import IntegrityError, transaction
