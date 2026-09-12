@@ -1385,17 +1385,35 @@ def is_isolated_failure(error):
     buried everything else and never said which event to fix.
 
     Not isolated, so still loud: 401 and 403 (the key, which every event
-    shares), 429 (the account's rate), a 5xx or a request that got no answer
-    (echo.lu itself), a missing key, and a create that came back without an
-    id. Those are what the sweep's failure exists for — a revoked key or a
-    long outage must not read as a healthy run.
+    shares), 408 and 429 (a timed-out request, the account's rate — the
+    service's condition, not the payload's), a 5xx or a request that got no
+    answer (echo.lu itself), a missing key, and a create that came back
+    without an id. Those are what the sweep's failure exists for — a revoked
+    key or a long outage must not read as a healthy run.
     """
     if isinstance(error, EchoLuNotConfigured):
         return False
     if isinstance(error, EchoLuNotSent):
         return True
     status = getattr(error, "status_code", None)
-    return status is not None and 400 <= status < 500 and status not in (401, 403, 429)
+    return status is not None and 400 <= status < 500 and status not in _SWEEP_WIDE_4XX
+
+
+# 4xx answers about the key or the service rather than one event's payload.
+_SWEEP_WIDE_4XX = frozenset({401, 403, 408, 429})
+
+
+def _no_published_listing(error):
+    """True for echo.lu's own 404 "no published experience found".
+
+    Matched on the body, not on the status alone: a 404 from a stale base URL
+    or a moved route has the same status and proves nothing about whether the
+    listing is still public.
+    """
+    if getattr(error, "status_code", None) != 404:
+        return False
+    body = str(getattr(error, "body", "") or "").lower()
+    return "no published experience" in body
 
 
 def _write_experience(sync, payload, fingerprint, client):
@@ -1781,22 +1799,27 @@ def withdraw_event(event, client=None, dry_run=False, explicit=False):
                 try:
                     client.unpublish_experience(sync.experience_id)
                 except EchoLuError as exc:
-                    # A 404 means echo.lu holds no *published* listing under
-                    # this id — its body reads "no published experience
-                    # found". A listing created as a draft and never
-                    # submitted answers that, and so does one deleted in the
-                    # back office. Either way nothing is public, which is all
-                    # a take-down is for, so it is recorded as done.
+                    # echo.lu's 404 "no published experience found" means it
+                    # holds no *published* listing under this id. A listing
+                    # created as a draft and never submitted answers that,
+                    # and so does one deleted in the back office. Either way
+                    # nothing is public, which is all a take-down is for, so
+                    # it is recorded as done.
                     #
                     # Recorded as a failure instead, the row stayed FAILED,
                     # `events_needing_sync` re-selected it, and every finished
                     # draft retried the same impossible unpublish each hour —
                     # two of them did on prod from 2026-08-26 onward.
                     #
+                    # The body is checked, not just the status. A stale base
+                    # URL or a moved route 404s too, while the listing stays
+                    # public — taking that as success would stop the sweep
+                    # retrying a take-down that never happened.
+                    #
                     # Only the unpublish. A cancel that 404s still fails:
                     # whether a notice is owed is a different question, and
                     # the event ending routes it back here anyway.
-                    if exc.status_code != 404:
+                    if not _no_published_listing(exc):
                         raise
                     logger.info(
                         "echo.lu has no published listing %s for event %s; "

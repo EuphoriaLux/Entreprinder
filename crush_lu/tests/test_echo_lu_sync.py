@@ -1578,6 +1578,30 @@ class SyncEventTests(TestCase):
             EchoExperienceSync.Status.FAILED,
         )
 
+    def test_a_route_level_404_is_not_taken_as_withdrawn(self):
+        # A stale ECHO_LU_API_BASE_URL, or echo.lu moving the unpublish
+        # route, also answers 404 — while the listing stays public. Only the
+        # documented "no published experience found" answer proves nothing is
+        # showing; anything else must stay FAILED so the sweep keeps trying.
+        event = make_event()
+        echo_lu.sync_event(event, client=FakeClient())
+
+        MeetupEvent.objects.filter(pk=event.pk).update(is_published=False)
+        event.refresh_from_db()
+        for body in ("<html>Not Found</html>", {"message": "Cannot PATCH"}, None):
+            with self.subTest(body=body):
+                failing = FakeClient(
+                    error=echo_lu.EchoLuError(
+                        "echo.lu PATCH rejected", status_code=404, body=body
+                    )
+                )
+                with self.assertRaises(echo_lu.EchoLuError):
+                    echo_lu.sync_event(event, client=failing)
+                self.assertEqual(
+                    EchoExperienceSync.objects.get(event=event).status,
+                    EchoExperienceSync.Status.FAILED,
+                )
+
     def test_privacy_beats_a_cancellation_notice(self):
         # A cancellation notice is a published thing: it keeps the title,
         # venue and date on a national portal. An event that was cancelled AND
@@ -2054,6 +2078,7 @@ class IsolatedFailureTests(TestCase):
         for error in (
             echo_lu.EchoLuError("key revoked", status_code=401),
             echo_lu.EchoLuError("forbidden", status_code=403),
+            echo_lu.EchoLuError("request timeout", status_code=408),
             echo_lu.EchoLuError("slow down", status_code=429),
             echo_lu.EchoLuError("echo.lu is down", status_code=500),
             echo_lu.EchoLuError("echo.lu PUT failed: Read timed out"),

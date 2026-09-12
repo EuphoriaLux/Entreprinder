@@ -353,7 +353,8 @@ had already committed. Anything not reached is named in a message and left to
 the sweep.
 
 **Sweep-wide failures reach the timer.** If echo.lu refuses the key (401/403),
-rate-limits the account (429), answers 5xx or does not answer at all, the
+times the request out (408), rate-limits the account (429), answers 5xx or
+does not answer at all, the
 command exits non-zero and the endpoint answers 500, so the Function's failure
 count moves. A revoked key or a long outage shows up there instead of staying
 green on a job that quietly synced nothing.
@@ -396,9 +397,11 @@ python manage.py sync_events_to_echo --audit
   leaves the public site but the experience stays addressable, so re-publishing
   updates the same listing instead of creating a second one.
 
-An unpublish that echo.lu answers with **404** (`no published experience
-found`) is recorded as **Withdrawn**, not as a failure. It means the listing
-was never public — a draft nobody submitted, which is every listing created
+An unpublish that echo.lu answers with **404 `no published experience
+found`** is recorded as **Withdrawn**, not as a failure. Only that answer — a
+404 with any other body (a stale `ECHO_LU_API_BASE_URL`, a moved route) says
+nothing about the listing and stays a failure. It means the listing was never
+public — a draft nobody submitted, which is every listing created
 with `ECHO_LU_CREATE_STATUS=draft` — or was deleted in the back office. Either
 way the take-down's goal already holds. Recorded as Failed, the row stayed in
 the sweep and each finished draft retried the same impossible unpublish every
