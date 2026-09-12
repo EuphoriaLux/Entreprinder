@@ -33,6 +33,7 @@ from crush_lu.models.echo_lu import EchoExperienceSync, EchoVenue
 from crush_lu.services import echo_lu
 
 ENABLED = {"ECHO_LU_SYNC_ENABLED": True, "ECHO_LU_API_KEY": "test-key"}
+COMMAND_LOGGER = "crush_lu.management.commands.sync_events_to_echo"
 
 
 def _reset_echo_delete_burst():
@@ -144,6 +145,23 @@ class FakeClient:
     def delete_experience(self, experience_id):
         self._record("delete", experience_id)
         return {}
+
+
+class DraftListingClient(FakeClient):
+    """echo.lu holding a listing that was never published.
+
+    Prod creates listings as drafts, and echo.lu answers an unpublish of one
+    with a 404 — the exact answer two finished events got every hour from
+    2026-08-26.
+    """
+
+    def unpublish_experience(self, experience_id):
+        self._record("unpublish", experience_id)
+        raise echo_lu.EchoLuError(
+            f"echo.lu PATCH /experiences/{experience_id}/unpublish rejected",
+            status_code=404,
+            body="REQUEST FAILED - no published experience found",
+        )
 
 
 class ShouldPublishTests(TestCase):
@@ -1507,6 +1525,59 @@ class SyncEventTests(TestCase):
         # The id survives so re-publishing reuses the same listing.
         self.assertEqual(sync.experience_id, "exp-123")
 
+    def test_unpublishing_a_never_published_draft_counts_as_withdrawn(self):
+        # echo.lu answers an unpublish of a draft with 404 "no published
+        # experience found". Recorded as a failure, the row stayed FAILED, the
+        # sweep re-selected it, and two finished events retried the same
+        # impossible unpublish every hour from 2026-08-26. Nothing is public
+        # either way, which is all a take-down is for.
+        event = make_event()
+        echo_lu.sync_event(event, client=FakeClient())
+
+        MeetupEvent.objects.filter(pk=event.pk).update(is_published=False)
+        event.refresh_from_db()
+        client = DraftListingClient()
+        self.assertEqual(echo_lu.sync_event(event, client=client), "withdrawn")
+
+        self.assertEqual(client.calls, [("unpublish", "exp-123")])
+        sync = EchoExperienceSync.objects.get(event=event)
+        self.assertEqual(sync.status, EchoExperienceSync.Status.WITHDRAWN)
+        self.assertEqual(sync.experience_id, "exp-123")
+        self.assertEqual(sync.last_error, "")
+        self.assertNotIn(event, list(echo_lu.events_needing_sync()))
+
+    def test_an_explicit_removal_of_a_draft_is_satisfied(self):
+        # Same answer, asked for by hand: the removal is done, so the request
+        # clears and the row parks in SUPPRESSED like any explicit take-down.
+        event = make_event()
+        echo_lu.sync_event(event, client=FakeClient())
+
+        self.assertEqual(
+            echo_lu.withdraw_event(event, client=DraftListingClient(), explicit=True),
+            "withdrawn",
+        )
+        sync = EchoExperienceSync.objects.get(event=event)
+        self.assertEqual(sync.status, EchoExperienceSync.Status.SUPPRESSED)
+        self.assertFalse(sync.removal_requested)
+
+    def test_any_other_unpublish_rejection_still_fails(self):
+        # Only the 404 says "nothing public". Anything else leaves the
+        # listing possibly still showing, so the row stays FAILED and the
+        # sweep keeps retrying the take-down.
+        event = make_event()
+        echo_lu.sync_event(event, client=FakeClient())
+
+        MeetupEvent.objects.filter(pk=event.pk).update(is_published=False)
+        event.refresh_from_db()
+        failing = FakeClient(error=echo_lu.EchoLuError("bad", status_code=400))
+        with self.assertRaises(echo_lu.EchoLuError):
+            echo_lu.sync_event(event, client=failing)
+
+        self.assertEqual(
+            EchoExperienceSync.objects.get(event=event).status,
+            EchoExperienceSync.Status.FAILED,
+        )
+
     def test_privacy_beats_a_cancellation_notice(self):
         # A cancellation notice is a published thing: it keeps the title,
         # venue and date on a national portal. An event that was cancelled AND
@@ -1966,6 +2037,82 @@ class ClientTransportTests(TestCase):
         self.assertIn("unknown category", str(caught.exception))
 
 
+class IsolatedFailureTests(TestCase):
+    """Which failures belong to one event, and which to the whole sweep."""
+
+    def test_failures_that_belong_to_one_event(self):
+        for error in (
+            echo_lu.EchoLuNotSent("no echo.lu venue is linked"),
+            echo_lu.EchoLuError("unknown category", status_code=400),
+            echo_lu.EchoLuError("no published experience", status_code=404),
+            echo_lu.EchoLuError("invalid field", status_code=422),
+        ):
+            with self.subTest(error=str(error)):
+                self.assertTrue(echo_lu.is_isolated_failure(error))
+
+    def test_failures_that_belong_to_the_sweep(self):
+        for error in (
+            echo_lu.EchoLuError("key revoked", status_code=401),
+            echo_lu.EchoLuError("forbidden", status_code=403),
+            echo_lu.EchoLuError("slow down", status_code=429),
+            echo_lu.EchoLuError("echo.lu is down", status_code=500),
+            echo_lu.EchoLuError("echo.lu PUT failed: Read timed out"),
+            echo_lu.EchoLuNotConfigured("no key"),
+            echo_lu.EchoLuOrphanedCreate("accepted without an id"),
+        ):
+            with self.subTest(error=str(error)):
+                self.assertFalse(echo_lu.is_isolated_failure(error))
+
+
+@override_settings(
+    ROOT_URLCONF="azureproject.urls_crush",
+    ADMIN_API_KEY="test-admin-api-key",
+    **ENABLED,
+)
+class EchoSyncEndpointTests(TestCase):
+    """POST /api/admin/echo-sync/ — what the EchoLuSync timer actually sees."""
+
+    def test_an_unlinked_venue_no_longer_500s_the_timer(self):
+        # The prod symptom, end to end: every hourly POST answered 500 while
+        # the only events failing were ones a person has to fix — event 23's
+        # venue was never linked. The timer's job is to report the sweep, and
+        # the sweep ran; the event is named in the warning instead.
+        from django.test import Client
+
+        event = make_event(
+            title="Karaoke", location="Caribou Karaoké", link_venue=False
+        )
+        with mock.patch.object(
+            echo_lu, "EchoLuClient", return_value=FakeClient()
+        ), self.assertLogs(COMMAND_LOGGER, level="WARNING") as logs:
+            resp = Client(HTTP_HOST="crush.lu").post(
+                "/api/admin/echo-sync/",
+                HTTP_AUTHORIZATION="Bearer test-admin-api-key",
+            )
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertIn(
+            f"[{event.pk}] no echo.lu venue is linked", "\n".join(logs.output)
+        )
+        self.assertEqual(
+            EchoExperienceSync.objects.get(event=event).status,
+            EchoExperienceSync.Status.FAILED,
+        )
+
+    def test_a_revoked_key_still_500s_the_timer(self):
+        from django.test import Client
+
+        make_event(title="Any")
+        client = FakeClient(error=echo_lu.EchoLuError("unauthorized", status_code=401))
+        with mock.patch.object(echo_lu, "EchoLuClient", return_value=client):
+            resp = Client(HTTP_HOST="crush.lu").post(
+                "/api/admin/echo-sync/",
+                HTTP_AUTHORIZATION="Bearer test-admin-api-key",
+            )
+
+        self.assertEqual(resp.status_code, 500)
+
+
 class SyncCommandTests(TestCase):
     """The command is the scheduled entry point, so its guards matter."""
 
@@ -1998,13 +2145,13 @@ class SyncCommandTests(TestCase):
 
     @override_settings(**ENABLED)
     def test_one_rejection_does_not_stop_the_rest(self):
-        # Both halves matter: every other event is still attempted, and the
-        # command still exits non-zero. The Function counts a clean return as
-        # a successful invocation, so a swallowed failure leaves a revoked key
-        # showing green on the only monitoring anybody watches.
-        from django.core.management.base import CommandError
-
-        good = make_event(title="Good")
+        # Every other event is still attempted, and one event's rejection does
+        # not fail the sweep. It is recorded on that event's row and named in
+        # the sweep's warning — but it fails identically every hour until a
+        # person fixes the event, and 500ing the endpoint on it buried every
+        # other exception for 18 days on prod. The failures that still fail
+        # the sweep are pinned in test_a_sweep_wide_failure_still_fails_it.
+        make_event(title="Good")
         bad = make_event(title="Bad")
 
         def fake_sync(event, client=None, force=False, dry_run=False):
@@ -2015,33 +2162,129 @@ class SyncCommandTests(TestCase):
         out = StringIO()
         with mock.patch.object(
             echo_lu, "sync_event", side_effect=fake_sync
-        ), mock.patch.object(echo_lu, "EchoLuClient"):
-            with self.assertRaises(CommandError):
-                call_command("sync_events_to_echo", stdout=out, stderr=out)
+        ), mock.patch.object(echo_lu, "EchoLuClient"), self.assertLogs(
+            COMMAND_LOGGER, level="WARNING"
+        ) as logs:
+            call_command("sync_events_to_echo", stdout=out, stderr=out)
 
         output = out.getvalue()
         self.assertIn("Good", output)
         self.assertIn("rejected", output)
+        self.assertIn(f"[{bad.pk}] rejected", "\n".join(logs.output))
 
     @override_settings(**ENABLED)
-    def test_a_blocked_event_fails_the_sweep(self):
-        # An orphaned listing is the one state that never recovers on its own,
-        # so a sweep that returned 0 over it would report green to the Azure
-        # timer forever about a listing nobody can reach — worse than the
-        # transient rejection the non-zero exit was added for.
-        from django.core.management.base import CommandError
-
-        make_event(title="Orphaned")
+    def test_a_blocked_event_is_named_without_failing_the_sweep(self):
+        # An orphaned listing never recovers on its own, so it must not go
+        # quiet. But failing the sweep over it is how one orphan kept the
+        # EchoLuSync timer red for 18 days with an exception that never said
+        # which event it was. The warning names it, every run, instead.
+        orphaned = make_event(title="Orphaned")
 
         out = StringIO()
         with mock.patch.object(
             echo_lu, "sync_event", return_value="blocked"
-        ), mock.patch.object(echo_lu, "EchoLuClient"):
-            with self.assertRaises(CommandError) as caught:
-                call_command("sync_events_to_echo", stdout=out, stderr=out)
+        ), mock.patch.object(echo_lu, "EchoLuClient"), self.assertLogs(
+            COMMAND_LOGGER, level="WARNING"
+        ) as logs:
+            call_command("sync_events_to_echo", stdout=out, stderr=out)
 
-        self.assertIn("blocked", str(caught.exception))
-        self.assertIn("--audit", str(caught.exception))
+        logged = "\n".join(logs.output)
+        self.assertIn(f"[{orphaned.pk}] blocked", logged)
+        self.assertIn("--audit", logged)
+
+    @override_settings(**ENABLED)
+    def test_a_sweep_wide_failure_still_fails_it(self):
+        # What the non-zero exit was added for, and still does: a revoked key
+        # or an echo.lu outage must not read as a healthy invocation on the
+        # timer. These are not about any one event, so they fail the sweep
+        # however many other events went through.
+        from django.core.management.base import CommandError
+
+        make_event(title="Any")
+        for error in (
+            echo_lu.EchoLuError("key revoked", status_code=401),
+            echo_lu.EchoLuError("forbidden", status_code=403),
+            echo_lu.EchoLuError("slow down", status_code=429),
+            echo_lu.EchoLuError("echo.lu is down", status_code=503),
+            echo_lu.EchoLuError("echo.lu PUT failed: Read timed out"),
+            echo_lu.EchoLuOrphanedCreate("accepted without an id"),
+        ):
+            with self.subTest(error=str(error)), mock.patch.object(
+                echo_lu, "sync_event", side_effect=error
+            ), mock.patch.object(echo_lu, "EchoLuClient"):
+                with self.assertRaises(CommandError):
+                    call_command(
+                        "sync_events_to_echo", stdout=StringIO(), stderr=StringIO()
+                    )
+
+    @override_settings(**ENABLED)
+    def test_a_targeted_run_still_fails_on_its_own_event(self):
+        # --event-id asks about one event, so that event's failure is the whole
+        # answer and the exit code has to carry it.
+        from django.core.management.base import CommandError
+
+        event = make_event(title="Bad")
+        with mock.patch.object(
+            echo_lu,
+            "sync_event",
+            side_effect=echo_lu.EchoLuError("rejected", status_code=422),
+        ), mock.patch.object(echo_lu, "EchoLuClient"):
+            with self.assertRaises(CommandError):
+                self._run("--event-id", str(event.pk))
+
+    @override_settings(**ENABLED)
+    def test_the_production_mix_does_not_fail_the_sweep(self):
+        # The four events behind every hourly 500 from 2026-08-25 to
+        # 2026-09-12, through the real sync path: a venue nobody linked, a
+        # finished listing that was only ever a draft, an orphan, and one
+        # healthy event beside them.
+        unlinked = make_event(
+            title="Karaoke", location="Caribou Karaoké", link_venue=False
+        )
+        draft = make_event(title="Finished draft")
+        EchoExperienceSync.objects.create(
+            event=draft,
+            experience_id="exp-draft",
+            status=EchoExperienceSync.Status.SYNCED,
+        )
+        MeetupEvent.objects.filter(pk=draft.pk).update(
+            date_time=timezone.now() - timedelta(days=3)
+        )
+        orphan = make_event(title="Orphan")
+        EchoExperienceSync.objects.create(
+            event=orphan, status=EchoExperienceSync.Status.ORPHANED
+        )
+        healthy = make_event(title="Healthy")
+
+        client = DraftListingClient()
+        out = StringIO()
+        with mock.patch.object(
+            echo_lu, "EchoLuClient", return_value=client
+        ), self.assertLogs(COMMAND_LOGGER, level="WARNING") as logs:
+            call_command("sync_events_to_echo", stdout=out, stderr=out)
+
+        logged = "\n".join(logs.output)
+        self.assertIn(f"[{unlinked.pk}] no echo.lu venue is linked", logged)
+        self.assertIn(f"[{orphan.pk}] blocked", logged)
+        # The draft is done, not a failure.
+        self.assertNotIn(f"[{draft.pk}]", logged)
+        self.assertEqual(
+            EchoExperienceSync.objects.get(event=draft).status,
+            EchoExperienceSync.Status.WITHDRAWN,
+        )
+        self.assertEqual(
+            EchoExperienceSync.objects.get(event=healthy).status,
+            EchoExperienceSync.Status.SYNCED,
+        )
+
+        # And the draft leaves the sweep, rather than retrying the same
+        # impossible unpublish every hour.
+        with mock.patch.object(echo_lu, "EchoLuClient", return_value=client):
+            call_command("sync_events_to_echo", stdout=StringIO(), stderr=StringIO())
+        self.assertEqual(
+            [call for call in client.calls if call[0] == "unpublish"],
+            [("unpublish", "exp-draft")],
+        )
 
     @override_settings(**ENABLED)
     def test_the_sweep_stops_on_its_time_budget(self):

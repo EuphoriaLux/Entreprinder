@@ -1368,6 +1368,36 @@ def _proves_nothing_was_created(error):
     return status is not None and 400 <= status < 500
 
 
+def is_isolated_failure(error):
+    """True when `error` belongs to one event rather than to the whole sweep.
+
+    The sweep keeps going past every failure either way. This decides the
+    other question: whether a failure should also fail the *sweep* — answer
+    500 to the ``EchoLuSync`` timer — or be reported and left on the event's
+    sync row for a person to fix.
+
+    Isolated: echo.lu read this event's request and refused it (a 4xx), or we
+    declined to send it (:class:`EchoLuNotSent` — an unlinked venue, an empty
+    required facet). Each is already recorded on the row the admin renders,
+    needs somebody to change something about *that event*, and fails
+    identically every hour until they do. Failing the sweep on them turned
+    three such events into 400+ identical exceptions over 18 days, which
+    buried everything else and never said which event to fix.
+
+    Not isolated, so still loud: 401 and 403 (the key, which every event
+    shares), 429 (the account's rate), a 5xx or a request that got no answer
+    (echo.lu itself), a missing key, and a create that came back without an
+    id. Those are what the sweep's failure exists for — a revoked key or a
+    long outage must not read as a healthy run.
+    """
+    if isinstance(error, EchoLuNotConfigured):
+        return False
+    if isinstance(error, EchoLuNotSent):
+        return True
+    status = getattr(error, "status_code", None)
+    return status is not None and 400 <= status < 500 and status not in (401, 403, 429)
+
+
 def _write_experience(sync, payload, fingerprint, client):
     """Send one write for `sync` and record the id it settles on.
 
@@ -1748,7 +1778,32 @@ def withdraw_event(event, client=None, dry_run=False, explicit=False):
                 client.cancel_experience(sync.experience_id)
                 sync.mark_cancelled()
             else:
-                client.unpublish_experience(sync.experience_id)
+                try:
+                    client.unpublish_experience(sync.experience_id)
+                except EchoLuError as exc:
+                    # A 404 means echo.lu holds no *published* listing under
+                    # this id — its body reads "no published experience
+                    # found". A listing created as a draft and never
+                    # submitted answers that, and so does one deleted in the
+                    # back office. Either way nothing is public, which is all
+                    # a take-down is for, so it is recorded as done.
+                    #
+                    # Recorded as a failure instead, the row stayed FAILED,
+                    # `events_needing_sync` re-selected it, and every finished
+                    # draft retried the same impossible unpublish each hour —
+                    # two of them did on prod from 2026-08-26 onward.
+                    #
+                    # Only the unpublish. A cancel that 404s still fails:
+                    # whether a notice is owed is a different question, and
+                    # the event ending routes it back here anyway.
+                    if exc.status_code != 404:
+                        raise
+                    logger.info(
+                        "echo.lu has no published listing %s for event %s; "
+                        "recording it as withdrawn",
+                        sync.experience_id,
+                        event.pk,
+                    )
                 sync.mark_withdrawn(explicit=explicit)
         except EchoLuError as exc:
             # Not re-raised here — see sync_event. `removal_requested` was
@@ -1871,8 +1926,8 @@ def events_needing_sync(queryset=None):
     #
     # So this row is selected because of what the *row* says, not the event.
     # No write can result: `sync_event` checks ORPHANED before it looks at
-    # eligibility and answers "blocked", which is what keeps the hourly job
-    # red until a person resolves it.
+    # eligibility and answers "blocked", which is what keeps the event in the
+    # hourly sweep's warning until a person resolves it.
     orphaned = queryset.filter(echo_sync__status=EchoExperienceSync.Status.ORPHANED)
     # A withdrawn listing owed a cancellation notice. The event was pulled
     # while unpublished or private, then republished with the cancellation

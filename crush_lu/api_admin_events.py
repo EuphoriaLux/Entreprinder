@@ -37,6 +37,28 @@ from crush_lu.api_admin_auth import unauthorized as _unauthorized
 
 logger = logging.getLogger(__name__)
 
+# Enough for a sweep's per-item report; the tail is kept because the summary
+# that says what failed is printed last.
+_OUTPUT_LOG_CHARS = 4000
+
+
+def _log_output(label: str, buffer: StringIO) -> None:
+    """Log what a failed command printed before it failed.
+
+    The commands report which item failed, and why, on stdout — and that was
+    discarded with the buffer, so a failing sweep left nothing in App Insights
+    but a bare "Command error" (the echo.lu sweep did so 400+ times without
+    once naming an event). A line of its own rather than part of the exception
+    message, so that message stays one stable string to group on.
+    """
+    output = buffer.getvalue().strip()
+    if output:
+        logger.error(
+            "[%s] command output before the error:\n%s",
+            label,
+            output[-_OUTPUT_LOG_CHARS:],
+        )
+
 
 def _run(request, label: str, command: str, **command_kwargs) -> JsonResponse:
     """Authenticate, run ``command``, and answer 202 — the shared body.
@@ -54,9 +76,11 @@ def _run(request, label: str, command: str, **command_kwargs) -> JsonResponse:
     try:
         call_command(command, stdout=buffer, stderr=buffer, **command_kwargs)
     except CommandError:
+        _log_output(label, buffer)
         logger.exception("[%s] Command error", label)
         return JsonResponse({"error": "command_error"}, status=500)
     except Exception:  # noqa: BLE001
+        _log_output(label, buffer)
         logger.exception("[%s] Unhandled error", label)
         return JsonResponse({"error": "internal_error"}, status=500)
 

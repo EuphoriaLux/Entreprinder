@@ -30,11 +30,20 @@ Usage:
 Requires ECHO_LU_API_KEY and ECHO_LU_SYNC_ENABLED=true. Without them the
 command reports what it would do and exits without touching echo.lu.
 
-Exits non-zero when any event failed or is blocked, because the Azure Function
-timer reads a clean exit as a healthy invocation — a sweep that syncs nothing
-for a week must not look the same as one with nothing to do.
+Exits non-zero when the sweep itself is unhealthy — the key refused, the
+account rate-limited, echo.lu erroring or not answering — because the Azure
+Function timer reads a clean exit as a healthy invocation, and a sweep that
+syncs nothing for a week must not look the same as one with nothing to do.
+
+A failure that belongs to one event — echo.lu rejecting its payload, a venue
+nobody has linked, a listing blocked on an untracked create — does not fail
+the run. It is recorded on that event's sync row and named in one WARNING per
+sweep, because it fails identically every hour until a person fixes that
+event, and 500ing the endpoint on it hid every other exception. With
+--event-id any failure is fatal, since that event is the only thing asked about.
 """
 
+import logging
 import time
 
 from django.conf import settings
@@ -42,6 +51,8 @@ from django.core.management.base import BaseCommand, CommandError
 
 from crush_lu.models import MeetupEvent
 from crush_lu.services import echo_lu
+
+logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
@@ -181,6 +192,7 @@ class Command(BaseCommand):
         client = None if dry_run else echo_lu.EchoLuClient(max_retries=0)
         counts = {}
         failures = []
+        blocked = []
 
         # The EchoLuSync Function gives this endpoint 110s. One event can burn
         # most of a minute on its own against a struggling echo.lu (timeout
@@ -259,6 +271,8 @@ class Command(BaseCommand):
                 continue
 
             counts[outcome] = counts.get(outcome, 0) + 1
+            if outcome == "blocked":
+                blocked.append(event)
             if outcome in ("unchanged", "skipped"):
                 continue
             self.stdout.write(
@@ -267,22 +281,49 @@ class Command(BaseCommand):
 
         self._report(counts, failures, dry_run, deferred)
 
-        blocked = counts.get("blocked", 0)
-        if failures or blocked:
-            # The Function turns a clean return into a successful invocation,
-            # so swallowing this would leave a revoked key or a day-long
-            # outage showing green on the timer's failure count — the one
-            # signal anybody is watching. Every event was still attempted.
+        isolated = [(e, exc) for e, exc in failures if echo_lu.is_isolated_failure(exc)]
+        systemic = [
+            (e, exc) for e, exc in failures if not echo_lu.is_isolated_failure(exc)
+        ]
+
+        if isolated or blocked:
+            # Named here because nothing else names them: the lines above go
+            # to a stdout the endpoint only keeps on success, at INFO. One
+            # line per sweep, so a stuck event costs one warning an hour
+            # rather than an exception, and says which event and why.
             #
-            # `blocked` counts too, and it is the more important half: an
-            # orphaned listing does not recover on the next pass the way a
-            # rejection might, so a sweep that returned 0 for one would report
-            # green forever over a listing nobody can reach.
+            # `blocked` belongs here rather than in the failure below. An
+            # orphan never recovers by itself, so it must not go quiet — but
+            # failing the sweep over one is how a single orphan kept the
+            # EchoLuSync timer red for 18 days without the exception ever
+            # saying which event it was.
+            attention = [f"[{e.pk}] {str(exc)[:300]}" for e, exc in isolated] + [
+                f"[{e.pk}] blocked on an untracked listing — run --audit"
+                for e in blocked
+            ]
+            logger.warning(
+                "[ECHO] sweep left %s event(s) needing attention: %s",
+                len(attention),
+                "; ".join(attention),
+            )
+
+        if systemic or (event_id and (failures or blocked)):
+            # The Function turns a clean return into a successful invocation,
+            # so swallowing a sweep-wide failure would leave a revoked key or
+            # a day-long outage showing green on the timer's failure count —
+            # the one signal anybody is watching. Every event was still
+            # attempted. With --event-id there is only one event, and its
+            # failure is the whole answer.
             parts = []
-            if failures:
-                parts.append(f"{len(failures)} event(s) rejected by echo.lu")
+            if systemic:
+                parts.append(
+                    f"{len(systemic)} event(s) failed on echo.lu's side or the "
+                    f"key's (auth, rate limit, 5xx or no answer)"
+                )
+            if isolated:
+                parts.append(f"{len(isolated)} event(s) rejected by echo.lu")
             if blocked:
-                parts.append(f"{blocked} event(s) blocked on an untracked listing")
+                parts.append(f"{len(blocked)} event(s) blocked on an untracked listing")
             raise CommandError(
                 f"{'; '.join(parts)}. See the errors above and the sync row on "
                 f"each event; --audit resolves the blocked ones."
