@@ -337,14 +337,16 @@ few seconds rather than a minute. Anything it drops is picked up by the sweep.
 hour resumes with the remainder — the selection is by state, not by cursor, so
 nothing is skipped. Override per-run with `--max-seconds`.
 
-The budget reserves two calls' worth of headroom rather than just checking
+The budget reserves one call's worth of headroom rather than just checking
 whether it has run out: an event started a second before the deadline still
-gets its full timeouts to finish, and that overshoot is exactly what the
-budget exists to prevent. Two, because a take-down that gets echo.lu's "no
-published experience found" answer follows it with one `GET` to tell a draft
-from a deleted listing. The sweep client also runs with retries off — the
+gets a full timeout to finish, and that overshoot is exactly what the budget
+exists to prevent. A take-down that gets echo.lu's "no published experience
+found" answer follows it with one `GET` to tell a draft from a deleted
+listing, but that `GET` is cut to whatever is left of the budget and skipped
+if nothing is (the row then stays Pending for the next sweep), so it needs no
+reservation of its own. The sweep client also runs with retries off — the
 sweep *is* the retry, an hour later — which keeps a single event's worst case
-to those two timeouts instead of four attempts plus backoff.
+to one timeout instead of four attempts plus backoff.
 
 **Admin actions are bounded too**, by `ECHO_LU_ADMIN_BUDGET_SECONDS` (30).
 Both the bulk publish/unpublish/cancel actions and the manual sync action run
@@ -423,8 +425,8 @@ hour.
 Before recording it, the sync asks echo.lu for the listing itself — one `GET`,
 made only on this answer, and only within the caller's time budget. The
 hourly sweep has budget for it; the admin's remove action and the
-save-triggered sync run inside a web request and skip it. A skipped or
-inconclusive check leaves the row **Pending** with its id kept: nothing is
+save-triggered sync run inside a web request and skip it. A skipped check
+leaves the row **Pending** with its id kept: nothing is
 public, the sweep re-selects the row and makes the check with time to spare,
 and no create can come of it while the id is set. If the `GET` finds it, it
 is a draft and the id is
@@ -432,8 +434,9 @@ kept, so re-publishing updates it. If the `GET` 404s too, the listing was
 deleted in the back office: the id is cleared, so re-publishing creates a
 fresh listing instead of updating one that no longer exists forever. (The
 route is known to work at that point — the unpublish answer proved it.)
-An inconclusive answer is handled like a skipped check: Pending, id kept,
-checked again on the next sweep.
+A check that is made and fails — the key refused, echo.lu erroring or not
+answering — is an echo.lu error like any other: the row is Failed with its id
+kept, the sweep retries it, and a shared cause still fails the sweep.
 
 A `cancel` that gets the same answer is recorded as **Withdrawn**, not
 Cancelled: no notice is showing, and Cancelled would tell the sweep one is and

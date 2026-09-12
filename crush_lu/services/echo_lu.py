@@ -1472,11 +1472,16 @@ def _listing_is_gone(client, experience_id):
     route is known to work, so a 404 here is about the listing.
 
     True means deleted, so forget the id; False means it is there (a draft),
-    so keep it. None means we do not know — the check was skipped or came
-    back inconclusive — and the caller must settle the row neither way:
-    clearing a live draft's id makes the next republish create a second
-    listing beside it, and settling as withdrawn keeps a possibly dead id for
-    good. See ``EchoExperienceSync.mark_unverified``.
+    so keep it. None means the check was not made — no deadline, or none
+    left — and the caller must settle the row neither way: clearing a live
+    draft's id makes the next republish create a second listing beside it,
+    and settling as withdrawn keeps a possibly dead id for good. See
+    ``EchoExperienceSync.mark_unverified``.
+
+    A lookup that *was* made and failed any other way than 404 raises, like
+    every other echo.lu error. Folding it into None would hide a revoked key
+    or an outage behind a row quietly left pending, while the sweep answered
+    202; raised, the caller records the failure and the sweep classifies it.
 
     Optional, so it only runs inside the caller's budget. A client without a
     deadline — the admin's remove action and the save-triggered sync, which
@@ -1495,7 +1500,9 @@ def _listing_is_gone(client, experience_id):
             experience_id, timeout=min(getattr(client, "timeout", remaining), remaining)
         )
     except EchoLuError as exc:
-        return True if exc.status_code == 404 else None
+        if exc.status_code == 404:
+            return True
+        raise
     return False
 
 

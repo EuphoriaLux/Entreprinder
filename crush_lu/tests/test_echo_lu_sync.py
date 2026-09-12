@@ -1634,24 +1634,34 @@ class SyncEventTests(TestCase):
             EchoExperienceSync.objects.get(event=event).experience_id, "exp-new"
         )
 
-    def test_an_inconclusive_check_leaves_the_row_pending(self):
-        # If the GET cannot say either way, settling the row either way is a
-        # guess: clearing the id risks a second listing beside a live draft,
-        # and WITHDRAWN would keep a possibly dead id for good. PENDING with
-        # the id kept leaves it for the next sweep to check.
-        event = make_event()
-        echo_lu.sync_event(event, client=FakeClient())
+    def test_a_check_that_fails_is_surfaced_not_swallowed(self):
+        # A lookup that was made and failed is an echo.lu error like any
+        # other, not "unknown". Swallowed into PENDING, a revoked key or an
+        # outage hitting every pending take-down would still answer 202. It
+        # is raised, so the sweep classifies it (401 and 503 fail the run),
+        # and the row is FAILED with its id kept — retried, never a create.
+        for status in (401, 503):
+            with self.subTest(status=status):
+                event = make_event()
+                echo_lu.sync_event(
+                    event,
+                    client=FakeClient(
+                        create_response=echo_response({"id": f"exp-{status}"})
+                    ),
+                )
 
-        MeetupEvent.objects.filter(pk=event.pk).update(is_published=False)
-        event.refresh_from_db()
-        client = DeletedListingClient()
-        client.get_status = 503
-        self.assertEqual(echo_lu.sync_event(event, client=client), "withdrawn")
+                MeetupEvent.objects.filter(pk=event.pk).update(is_published=False)
+                event.refresh_from_db()
+                client = DeletedListingClient()
+                client.get_status = status
+                with self.assertRaises(echo_lu.EchoLuError) as caught:
+                    echo_lu.sync_event(event, client=client)
 
-        sync = EchoExperienceSync.objects.get(event=event)
-        self.assertEqual(sync.status, EchoExperienceSync.Status.PENDING)
-        self.assertEqual(sync.experience_id, "exp-123")
-        self.assertIn(event, list(echo_lu.events_needing_sync()))
+                self.assertFalse(echo_lu.is_isolated_failure(caught.exception))
+                sync = EchoExperienceSync.objects.get(event=event)
+                self.assertEqual(sync.status, EchoExperienceSync.Status.FAILED)
+                self.assertEqual(sync.experience_id, f"exp-{status}")
+                self.assertIn(event, list(echo_lu.events_needing_sync()))
 
     def test_a_client_without_a_deadline_leaves_the_check_to_the_sweep(self):
         # The admin's remove action and the save-triggered sync run inside a
@@ -1713,8 +1723,9 @@ class SyncEventTests(TestCase):
         with mock.patch(
             "crush_lu.services.echo_lu.requests.request", return_value=failing
         ) as request:
-            # Inconclusive, not "it exists": the row must not be settled.
-            self.assertIsNone(echo_lu._listing_is_gone(client, "exp-1"))
+            # A lookup that was made and failed raises; it is not "unknown".
+            with self.assertRaises(echo_lu.EchoLuError):
+                echo_lu._listing_is_gone(client, "exp-1")
 
         self.assertEqual(request.call_count, 1)
         self.assertLessEqual(request.call_args.kwargs["timeout"], 3)
@@ -2610,8 +2621,7 @@ class SyncCommandTests(TestCase):
             "crush_lu.management.commands.sync_events_to_echo." "time.monotonic",
             side_effect=lambda: ticker[0],
         ):
-            # 45 leaves room for one event: two 20s calls are reserved.
-            call_command("sync_events_to_echo", "--max-seconds", "45", stdout=out)
+            call_command("sync_events_to_echo", "--max-seconds", "25", stdout=out)
 
         self.assertIn("1 event(s) left", out.getvalue())
 

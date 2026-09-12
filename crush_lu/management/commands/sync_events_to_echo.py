@@ -205,14 +205,18 @@ class Command(BaseCommand):
         budget = options["max_seconds"]
         if budget is None:
             budget = getattr(settings, "ECHO_LU_SWEEP_BUDGET_SECONDS", 90)
-        # Reserve one worst-case event. Checking only that the budget has not
-        # already run out lets an event start at 89s of 90 and then spend its
-        # calls' timeouts more, which is how a bounded sweep still overruns
-        # the Function. With retries off that worst case is two timeouts: a
-        # take-down answered "no published experience found" follows up with
-        # one GET to tell a draft from a listing deleted in the back office.
+        # Reserve one worst-case call. Checking only that the budget has not
+        # already run out lets an event start at 89s of 90 and then spend a
+        # whole timeout more, which is how a bounded sweep still overruns the
+        # Function. With retries off that worst case is one timeout. The one
+        # possible second call — the draft-or-deleted GET after a take-down
+        # answered "no published experience found" — needs no reservation of
+        # its own: it is cut to what is left of the budget (client.deadline,
+        # below) and skipped when nothing is, leaving the row PENDING for the
+        # next sweep. Reserving for it too made any budget of two timeouts or
+        # less start nothing, every hour, for good.
         deadline = (
-            time.monotonic() + budget - 2 * timeout if budget and not dry_run else None
+            time.monotonic() + budget - timeout if budget and not dry_run else None
         )
         if client is not None and budget:
             # Where the budget really ends, for the one optional follow-up
