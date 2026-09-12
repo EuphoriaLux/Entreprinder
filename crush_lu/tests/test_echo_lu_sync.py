@@ -1646,11 +1646,12 @@ class SyncEventTests(TestCase):
             EchoExperienceSync.objects.get(event=event).experience_id, "exp-123"
         )
 
-    def test_cancelling_a_draft_rests_as_cancelled(self):
-        # A cancel gets the same answer for a draft. Nothing is public, so
-        # there is no notice to show and nobody who needs one. Recorded as
-        # CANCELLED, the sweep leaves it until the event ends; as a failure,
-        # every cancelled upcoming draft would 404 once an hour instead.
+    def test_cancelling_a_draft_keeps_retrying_the_notice(self):
+        # A cancel gets the same answer for a draft: no notice is showing.
+        # CANCELLED would tell the sweep one is and leave the event alone for
+        # good — so a draft later submitted in the back office would go public
+        # uncancelled. WITHDRAWN keeps it owed a notice, and the retried
+        # cancel lands once there is something public to cancel.
         event = make_event()
         echo_lu.sync_event(event, client=FakeClient())
 
@@ -1661,13 +1662,19 @@ class SyncEventTests(TestCase):
 
         self.assertEqual([call[0] for call in client.calls], ["cancel", "get"])
         sync = EchoExperienceSync.objects.get(event=event)
-        self.assertEqual(sync.status, EchoExperienceSync.Status.CANCELLED)
+        self.assertEqual(sync.status, EchoExperienceSync.Status.WITHDRAWN)
         self.assertEqual(sync.experience_id, "exp-123")
+        self.assertIn(event, list(echo_lu.events_needing_sync()))
 
+        # Submitted in the back office since: the retried cancel now lands.
         event.refresh_from_db()
-        again = DraftListingClient()
-        self.assertEqual(echo_lu.sync_event(event, client=again), "skipped")
-        self.assertEqual(again.calls, [])
+        published = FakeClient()
+        echo_lu.sync_event(event, client=published)
+        self.assertEqual(published.calls, [("cancel", "exp-123")])
+        self.assertEqual(
+            EchoExperienceSync.objects.get(event=event).status,
+            EchoExperienceSync.Status.CANCELLED,
+        )
 
     def test_an_explicit_removal_of_a_draft_is_satisfied(self):
         # Same answer, asked for by hand: the removal is done, so the request
@@ -2383,6 +2390,97 @@ class SyncCommandTests(TestCase):
                 self._run("--event-id", str(event.pk))
 
     @override_settings(**ENABLED)
+    def test_the_same_rejection_for_several_events_fails_the_sweep(self):
+        # A mistyped or retired shared slug is refused by echo.lu, not caught
+        # locally, and every event needing a write gets the same answer. For
+        # one event that reads as per-event; for several it is the setting,
+        # and the timer has to see it.
+        from django.core.management.base import CommandError
+
+        make_event(title="First")
+        make_event(title="Second")
+
+        def fake_sync(event, client=None, force=False, dry_run=False):
+            raise echo_lu.EchoLuError(
+                f"echo.lu PUT /experiences/exp-{event.pk} rejected",
+                status_code=400,
+                body={"message": "unknown category: nightlife"},
+            )
+
+        with mock.patch.object(
+            echo_lu, "sync_event", side_effect=fake_sync
+        ), mock.patch.object(echo_lu, "EchoLuClient"):
+            with self.assertRaises(CommandError):
+                self._run()
+
+    @override_settings(**ENABLED)
+    def test_different_rejections_stay_per_event(self):
+        make_event(title="First")
+        make_event(title="Second")
+
+        def fake_sync(event, client=None, force=False, dry_run=False):
+            raise echo_lu.EchoLuError(
+                "rejected",
+                status_code=422,
+                body={"message": f"invalid address on {event.pk}"},
+            )
+
+        with mock.patch.object(
+            echo_lu, "sync_event", side_effect=fake_sync
+        ), mock.patch.object(echo_lu, "EchoLuClient"):
+            self._run()  # no CommandError
+
+    @override_settings(
+        ECHO_LU_FALLBACK_IMAGE="", SOCIAL_PREVIEW_IMAGE_URL="", **ENABLED
+    )
+    def test_one_event_missing_a_hybrid_field_stays_per_event(self):
+        # `pictures` comes from the event's own image first and the shared
+        # fallback second, so one image-less event with no fallback is that
+        # event's gap, not the calendar's — it must not fail the sweep.
+        event = make_event(title="No image")
+        with mock.patch.object(
+            echo_lu, "EchoLuClient", return_value=FakeClient()
+        ), self.assertLogs(COMMAND_LOGGER, level="WARNING") as logs:
+            self._run()
+
+        self.assertIn(f"[{event.pk}] not sent", "\n".join(logs.output))
+
+    @override_settings(
+        ECHO_LU_FALLBACK_IMAGE="", SOCIAL_PREVIEW_IMAGE_URL="", **ENABLED
+    )
+    def test_several_events_missing_the_same_field_fail_the_sweep(self):
+        # ...but several events refused for the same missing field is the
+        # blank fallback, and that is shared.
+        from django.core.management.base import CommandError
+
+        make_event(title="First")
+        make_event(title="Second")
+        with mock.patch.object(echo_lu, "EchoLuClient", return_value=FakeClient()):
+            with self.assertRaises(CommandError):
+                self._run()
+
+    @override_settings(**ENABLED)
+    def test_a_bulk_withdrawal_fails_when_a_listing_stays_up(self):
+        # --withdraw --all-listed is somebody taking the calendar down, not
+        # the routine sweep. Exiting 0 with a listing still public would tell
+        # them it worked.
+        from django.core.management.base import CommandError
+
+        event = make_event(title="Listed")
+        EchoExperienceSync.objects.create(
+            event=event,
+            experience_id="exp-live",
+            status=EchoExperienceSync.Status.SYNCED,
+        )
+        with mock.patch.object(
+            echo_lu,
+            "withdraw_event",
+            side_effect=echo_lu.EchoLuError("rejected", status_code=422),
+        ), mock.patch.object(echo_lu, "EchoLuClient"):
+            with self.assertRaises(CommandError):
+                self._run("--withdraw", "--all-listed")
+
+    @override_settings(**ENABLED)
     def test_the_production_mix_does_not_fail_the_sweep(self):
         # The four events behind every hourly 500 from 2026-08-25 to
         # 2026-09-12, through the real sync path: a venue nobody linked, a
@@ -2456,7 +2554,8 @@ class SyncCommandTests(TestCase):
             "crush_lu.management.commands.sync_events_to_echo." "time.monotonic",
             side_effect=lambda: ticker[0],
         ):
-            call_command("sync_events_to_echo", "--max-seconds", "25", stdout=out)
+            # 45 leaves room for one event: two 20s calls are reserved.
+            call_command("sync_events_to_echo", "--max-seconds", "45", stdout=out)
 
         self.assertIn("1 event(s) left", out.getvalue())
 

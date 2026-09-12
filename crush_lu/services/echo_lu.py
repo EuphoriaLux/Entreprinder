@@ -139,9 +139,12 @@ class EchoLuMisconfigured(EchoLuNotSent):
 
     Still :class:`EchoLuNotSent` — nothing reached echo.lu, so nothing was
     created and the row stays retryable. Its own class because it is not about
-    the event: a blanked ``ECHO_LU_DEFAULT_*`` facet or an empty fallback
-    picture refuses *every* event, so the sweep has to fail on it rather than
-    warn about it one event at a time (see :func:`is_isolated_failure`).
+    the event: a blanked audience, format or environment default (the facets
+    no event fills for itself) refuses *every* event, so the sweep has to fail
+    on it rather than warn about it one event at a time (see
+    :func:`is_isolated_failure`). A blank fallback for a field an event *can*
+    fill itself — the picture, say — is a plain :class:`EchoLuNotSent`; the
+    sweep notices when several events are refused for it at once.
     """
 
 
@@ -1081,12 +1084,14 @@ def missing_required_fields(payload):
     return [field for field in REQUIRED_EXPERIENCE_FIELDS if not payload.get(field)]
 
 
-# The required fields filled from settings every event shares rather than from
-# the event itself. Empty, they refuse every event at once — which is why a
-# payload missing one raises EchoLuMisconfigured, not a per-event refusal.
-_SHARED_CONFIG_FIELDS = frozenset(
-    {"pictures", "categories", "audiences", "languages", "environments", "formats"}
-)
+# The required fields filled *only* from settings every event shares. Empty,
+# they refuse every event at once — which is why a payload missing one raises
+# EchoLuMisconfigured, not a per-event refusal. `pictures`, `languages` and
+# `categories` are left out on purpose: each is filled from the event first
+# (its image, its languages, its type's category map) and a shared fallback
+# second, so one event lacking its own value is that event's gap. Several at
+# once are caught by the sweep comparing their refusals instead.
+_SHARED_CONFIG_FIELDS = frozenset({"audiences", "environments", "formats"})
 
 
 # The whole enum. echo.lu answers anything else with `400 Malformed videos
@@ -1681,12 +1686,12 @@ def sync_event(event, client=None, force=False, dry_run=False):
             if missing:
                 # A shared setting left empty refuses every event, not just
                 # this one, so it gets the class that fails the sweep.
-                refusal = (
+                refusal_class = (
                     EchoLuMisconfigured
                     if _SHARED_CONFIG_FIELDS.intersection(missing)
                     else EchoLuNotSent
                 )
-                raise refusal(
+                refusal = refusal_class(
                     "not sent — echo.lu requires "
                     + ", ".join(missing)
                     + ". Set the matching ECHO_LU_DEFAULT_* values (run "
@@ -1695,6 +1700,10 @@ def sync_event(event, client=None, force=False, dry_run=False):
                     "empty — that is the one to set, or ECHO_LU_FALLBACK_IMAGE "
                     "to override it just for echo.lu."
                 )
+                # What the sweep compares across events: the same missing
+                # field on several of them is a blank shared fallback.
+                refusal.missing_fields = tuple(missing)
+                raise refusal
 
             outcome = _write_experience(sync, payload, fingerprint, client)
         except EchoLuOrphanedCreate as exc:
@@ -1843,6 +1852,7 @@ def withdraw_event(event, client=None, dry_run=False, explicit=False):
         # notice is still wanted and whether to leave one.
         notice_wanted = _cancellation_notice_wanted(event)
         send_notice = event.is_cancelled and notice_wanted and not explicit
+        nothing_public = False
         try:
             try:
                 if send_notice:
@@ -1867,6 +1877,7 @@ def withdraw_event(event, client=None, dry_run=False, explicit=False):
                 # take-down that never happened.
                 if not _no_published_listing(exc):
                     raise
+                nothing_public = True
                 gone = _listing_is_gone(client, sync.experience_id)
                 logger.info(
                     "echo.lu has no published listing %s for event %s%s; "
@@ -1881,16 +1892,16 @@ def withdraw_event(event, client=None, dry_run=False, explicit=False):
                     # only takes orphans. Cleared, the republish creates.
                     sync.experience_id = ""
                     sync.save(update_fields=["experience_id", "updated_at"])
-            if send_notice:
-                # After the "no published" answer this records a notice that
-                # is not showing: there is nothing public to attach one to,
-                # and nobody saw the listing to need it. CANCELLED is still
-                # the right resting state — the sweep leaves it until the
-                # event ends and then unpublishes, which settles the same way.
-                # WITHDRAWN would have `notice_pending` resend the cancel
-                # every hour.
+            if send_notice and not nothing_public:
                 sync.mark_cancelled()
             else:
+                # A cancel answered "no published experience" lands here too,
+                # deliberately. No notice is showing, and CANCELLED would say
+                # one is: the sweep would leave the event alone for good, so a
+                # draft later submitted in the back office would go public
+                # uncancelled. WITHDRAWN keeps it owed a notice
+                # (`notice_pending`), so the cancel is retried each hour until
+                # the event ends, and lands once there is something to cancel.
                 sync.mark_withdrawn(explicit=explicit)
         except EchoLuError as exc:
             # Not re-raised here — see sync_event. `removal_requested` was

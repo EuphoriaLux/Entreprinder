@@ -337,12 +337,14 @@ few seconds rather than a minute. Anything it drops is picked up by the sweep.
 hour resumes with the remainder — the selection is by state, not by cursor, so
 nothing is skipped. Override per-run with `--max-seconds`.
 
-The budget reserves one call's worth of headroom rather than just checking
+The budget reserves two calls' worth of headroom rather than just checking
 whether it has run out: an event started a second before the deadline still
-gets a full timeout to finish, and that overshoot is exactly what the budget
-exists to prevent. The sweep client also runs with retries off — the sweep
-*is* the retry, an hour later — which keeps a single event's worst case to one
-timeout instead of four attempts plus backoff.
+gets its full timeouts to finish, and that overshoot is exactly what the
+budget exists to prevent. Two, because a take-down that gets echo.lu's "no
+published experience found" answer follows it with one `GET` to tell a draft
+from a deleted listing. The sweep client also runs with retries off — the
+sweep *is* the retry, an hour later — which keeps a single event's worst case
+to those two timeouts instead of four attempts plus backoff.
 
 **Admin actions are bounded too**, by `ECHO_LU_ADMIN_BUDGET_SECONDS` (30).
 Both the bulk publish/unpublish/cancel actions and the manual sync action run
@@ -362,7 +364,11 @@ command exits non-zero and the endpoint answers 500, so the Function's failure
 count moves. A revoked key or a long outage shows up there instead of staying
 green on a job that quietly synced nothing.
 
-**Per-event failures do not.** A 4xx rejection of one event's payload, an event
+**Per-event failures do not** — unless several events get the very same
+answer in one sweep (the same echo.lu rejection, or the same missing field),
+which means a shared setting and fails the sweep after all. `--event-id` and
+`--withdraw` runs fail on any failure. A 400/422 rejection of one event's
+payload, an event
 whose venue is not linked, and a listing blocked on an untracked create are
 recorded on that event's sync row (the admin shows them) and named in one
 `WARNING` per sweep, while the endpoint still answers 202:
@@ -418,9 +424,12 @@ fresh listing instead of updating one that no longer exists forever. (The
 route is known to work at that point — the unpublish answer proved it.)
 Anything inconclusive keeps the id.
 
-A `cancel` that gets the same answer is recorded as **Cancelled**: nothing is
-public, so there is nobody for a notice to reach, and the row rests until the
-event ends and the sweep unpublishes it. A `cancel` 404 with any other body is
+A `cancel` that gets the same answer is recorded as **Withdrawn**, not
+Cancelled: no notice is showing, and Cancelled would tell the sweep one is and
+leave the event alone for good — so a draft later submitted in the back office
+would go public uncancelled. Withdrawn keeps the event owed a notice, so the
+sweep retries the cancel each hour until the event ends, and it lands as soon
+as there is something public to cancel. A `cancel` 404 with any other body is
 a failure.
 
 Cancelling only applies while the event is *otherwise still public*. A

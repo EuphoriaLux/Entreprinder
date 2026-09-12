@@ -39,8 +39,10 @@ A failure that belongs to one event — echo.lu rejecting its payload, a venue
 nobody has linked, a listing blocked on an untracked create — does not fail
 the run. It is recorded on that event's sync row and named in one WARNING per
 sweep, because it fails identically every hour until a person fixes that
-event, and 500ing the endpoint on it hid every other exception. With
---event-id any failure is fatal, since that event is the only thing asked about.
+event, and 500ing the endpoint on it hid every other exception. Several events
+refused with the very same answer do fail it: that is a shared setting, not an
+event. With --event-id or --withdraw any failure is fatal, since those are an
+operator asking for one specific outcome.
 """
 
 import logging
@@ -203,12 +205,14 @@ class Command(BaseCommand):
         budget = options["max_seconds"]
         if budget is None:
             budget = getattr(settings, "ECHO_LU_SWEEP_BUDGET_SECONDS", 90)
-        # Reserve one worst-case call. Checking only that the budget has not
-        # already run out lets an event start at 89s of 90 and then spend a
-        # whole timeout more, which is how a bounded sweep still overruns the
-        # Function. With retries off that worst case is one timeout.
+        # Reserve one worst-case event. Checking only that the budget has not
+        # already run out lets an event start at 89s of 90 and then spend its
+        # calls' timeouts more, which is how a bounded sweep still overruns
+        # the Function. With retries off that worst case is two timeouts: a
+        # take-down answered "no published experience found" follows up with
+        # one GET to tell a draft from a listing deleted in the back office.
         deadline = (
-            time.monotonic() + budget - timeout if budget and not dry_run else None
+            time.monotonic() + budget - 2 * timeout if budget and not dry_run else None
         )
         deferred = 0
 
@@ -286,6 +290,41 @@ class Command(BaseCommand):
             (e, exc) for e, exc in failures if not echo_lu.is_isolated_failure(exc)
         ]
 
+        # A per-event refusal is a verdict on one payload — unless several
+        # events get the very same one, which means a shared cause:
+        #
+        # - a mistyped or retired shared slug (ECHO_LU_DEFAULT_*) is rejected
+        #   by echo.lu rather than caught here, with an identical answer for
+        #   every event that needs a write. Compared on status and body, not
+        #   the message, which leads with each event's own request path.
+        # - a blank fallback for a field an event can also fill itself (the
+        #   picture, languages, categories) refuses every event that lacks
+        #   its own value. One such event is that event's gap; several are
+        #   the setting.
+        #
+        # Warned about one event at a time, either would keep the timer green
+        # while nothing syncs. Other local refusals are never compared: two
+        # events at one unlinked venue share a venue, not a setting.
+        def comparable_answer(exc):
+            if exc.status_code is not None:
+                return (exc.status_code, str(exc.body))
+            missing = getattr(exc, "missing_fields", None)
+            return ("missing", missing) if missing else None
+
+        answers = {}
+        for e, exc in isolated:
+            answer = comparable_answer(exc)
+            if answer is not None:
+                answers.setdefault(answer, set()).add(e.pk)
+        shared = {answer for answer, pks in answers.items() if len(pks) > 1}
+        if shared:
+            systemic += [
+                (e, exc) for e, exc in isolated if comparable_answer(exc) in shared
+            ]
+            isolated = [
+                (e, exc) for e, exc in isolated if comparable_answer(exc) not in shared
+            ]
+
         if isolated or blocked:
             # Named here because nothing else names them: the lines above go
             # to a stdout the endpoint only keeps on success, at INFO. One
@@ -307,13 +346,15 @@ class Command(BaseCommand):
                 "; ".join(attention),
             )
 
-        if systemic or (event_id and (failures or blocked)):
+        if systemic or ((event_id or withdraw) and (failures or blocked)):
             # The Function turns a clean return into a successful invocation,
             # so swallowing a sweep-wide failure would leave a revoked key or
             # a day-long outage showing green on the timer's failure count —
             # the one signal anybody is watching. Every event was still
             # attempted. With --event-id there is only one event, and its
-            # failure is the whole answer.
+            # failure is the whole answer. With --withdraw somebody asked for
+            # listings to come down, and any one still up means it did not
+            # work — a script taking the calendar off must not exit 0.
             parts = []
             if systemic:
                 parts.append(
